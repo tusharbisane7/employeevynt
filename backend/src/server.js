@@ -11,27 +11,46 @@ import employeeRoutes from './routes/employee.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import fileRoutes from './routes/files.routes.js';
 
-const app = express();
-
 // ==========================================
 // APPLICATION CONFIGURATION
 // ==========================================
 
+const app = express();
 const PORT = process.env.PORT || 5000;
 
-const allowedOrigins = (
-  process.env.CLIENT_ORIGIN ||
-  'http://localhost:5173'
+// Render runs behind a reverse proxy.
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+
+// ==========================================
+// ALLOWED FRONTEND DOMAINS
+// ==========================================
+
+const defaultOrigins = [
+  'http://localhost:5173',
+  'https://employeeportalvyntara.netlify.app',
+  'https://employee.vyntaralabs.tech'
+];
+
+const environmentOrigins = (
+  process.env.CLIENT_ORIGIN || ''
 )
   .split(',')
-  .map(origin => origin.trim().replace(/\/$/, ''))
+  .map(origin => origin.trim())
   .filter(Boolean);
+
+const allowedOrigins = [
+  ...new Set([
+    ...defaultOrigins,
+    ...environmentOrigins
+  ].map(origin => origin.replace(/\/$/, '')))
+];
+
+console.log('Allowed frontend origins:', allowedOrigins);
 
 // ==========================================
 // SECURITY MIDDLEWARE
 // ==========================================
-
-app.disable('x-powered-by');
 
 app.use(
   helmet({
@@ -41,29 +60,58 @@ app.use(
   })
 );
 
-app.use(
-  cors({
-    origin(origin, callback) {
-      // Allow server-to-server requests and permitted browser origins.
-      if (!origin) {
-        return callback(null, true);
-      }
+// ==========================================
+// CORS CONFIGURATION
+// ==========================================
 
-      const normalizedOrigin = origin.replace(/\/$/, '');
+const corsOptions = {
+  origin(origin, callback) {
+    // Allow requests without an Origin header,
+    // such as server-to-server requests.
+    if (!origin) {
+      return callback(null, true);
+    }
 
-      if (allowedOrigins.includes(normalizedOrigin)) {
-        return callback(null, true);
-      }
+    const normalizedOrigin = origin.replace(/\/$/, '');
 
-      return callback(
-        new Error(`CORS blocked origin: ${origin}`)
-      );
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-  })
-);
+    if (allowedOrigins.includes(normalizedOrigin)) {
+      return callback(null, true);
+    }
+
+    console.warn('Blocked CORS origin:', origin);
+
+    return callback(
+      new Error(`CORS blocked origin: ${origin}`)
+    );
+  },
+
+  credentials: true,
+
+  methods: [
+    'GET',
+    'POST',
+    'PUT',
+    'PATCH',
+    'DELETE',
+    'OPTIONS'
+  ],
+
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization'
+  ],
+
+  optionsSuccessStatus: 204
+};
+
+app.use(cors(corsOptions));
+
+// Explicitly handle preflight requests.
+app.options(/.*/, cors(corsOptions));
+
+// ==========================================
+// REQUEST BODY CONFIGURATION
+// ==========================================
 
 app.use(express.json({ limit: '1mb' }));
 
@@ -76,8 +124,10 @@ const loginLimiter = rateLimit({
   limit: 20,
   standardHeaders: true,
   legacyHeaders: false,
+
   message: {
-    message: 'Too many login attempts. Please try again later.'
+    success: false,
+    message: 'Too many login attempts. Please try again after 15 minutes.'
   }
 });
 
@@ -91,7 +141,24 @@ app.get('/', (_req, res) => {
   res.status(200).json({
     success: true,
     message: 'Vyntara Employee Portal API is running',
-    status: 'OK'
+    service: 'Vyntara Employee Portal',
+    status: 'OK',
+    frontend: [
+      'https://employee.vyntaralabs.tech',
+      'https://employeeportalvyntara.netlify.app'
+    ]
+  });
+});
+
+// ==========================================
+// API ROOT
+// ==========================================
+
+app.get('/api', (_req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Vyntara API is available',
+    health: '/api/health'
   });
 });
 
@@ -122,16 +189,31 @@ app.get('/api/health', async (_req, res) => {
 });
 
 // ==========================================
-// API ROUTES
+// AUTHENTICATION ROUTES
 // ==========================================
 
 app.use('/api/auth', authRoutes);
+
+// ==========================================
+// EMPLOYEE ROUTES
+// ==========================================
+
 app.use('/api/employee', employeeRoutes);
+
+// ==========================================
+// ADMIN ROUTES
+// ==========================================
+
 app.use('/api/admin', adminRoutes);
+
+// ==========================================
+// FILE ROUTES
+// ==========================================
+
 app.use('/api/files', fileRoutes);
 
 // ==========================================
-// API 404 HANDLER
+// API NOT FOUND
 // ==========================================
 
 app.use('/api', (_req, res) => {
@@ -173,10 +255,16 @@ app.use((err, _req, res, _next) => {
 // ==========================================
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log('====================================');
-  console.log('Vyntara Employee Portal API');
-  console.log(`Server running on port ${PORT}`);
-  console.log('Environment:', process.env.NODE_ENV || 'development');
-  console.log('Allowed origins:', allowedOrigins);
-  console.log('====================================');
+  console.log('========================================');
+  console.log('VYNTARA EMPLOYEE PORTAL API');
+  console.log('========================================');
+  console.log(`Server running on port: ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log('Allowed origins:');
+
+  allowedOrigins.forEach(origin => {
+    console.log(`- ${origin}`);
+  });
+
+  console.log('========================================');
 });
