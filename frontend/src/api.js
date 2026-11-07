@@ -1,6 +1,6 @@
 
 const API =
-  import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+  import.meta.env.VITE_API_URL || 'https://employeevynt.onrender.com/api';
 
 // Get authentication token
 export function getToken() {
