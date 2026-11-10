@@ -1,3 +1,4 @@
+
 import { Router } from 'express';
 import path from 'path';
 import fs from 'fs';
@@ -15,10 +16,10 @@ const MAX_PDF_SIZE = 300 * 1024;
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// All employee routes require a valid login token.
+// All employee routes require authentication.
 router.use(authenticate);
 
-// Login activity and location endpoints are employee-only.
+// Employee-only middleware.
 function requireEmployee(req, res, next) {
   if (req.user?.role !== 'employee') {
     return res.status(403).json({
@@ -43,7 +44,10 @@ const pdfUpload = multer({
   fileFilter: (req, file, callback) => {
     const extension = path.extname(file.originalname).toLowerCase();
 
-    if (extension !== '.pdf' || file.mimetype !== 'application/pdf') {
+    if (
+      extension !== '.pdf' ||
+      file.mimetype !== 'application/pdf'
+    ) {
       return callback(new Error('Only PDF files are allowed.'));
     }
 
@@ -51,7 +55,6 @@ const pdfUpload = multer({
   }
 });
 
-// Handle Multer errors with readable API responses.
 function handlePdfUpload(req, res, next) {
   pdfUpload.single('document')(req, res, (error) => {
     if (!error) return next();
@@ -78,8 +81,11 @@ router.get('/dashboard', async (req, res) => {
   try {
     const employeeId = req.user.id;
 
-    const [projects, documents, verificationDocuments] = await Promise.all([
-      // Assigned projects and manager information.
+    const [
+      projects,
+      documents,
+      verificationDocuments
+    ] = await Promise.all([
       query(
         `SELECT
             p.id,
@@ -94,14 +100,15 @@ router.get('/dashboard', async (req, res) => {
             m.email AS manager_email,
             m.phone AS manager_phone
          FROM project_members pm
-         INNER JOIN projects p ON p.id = pm.project_id
-         LEFT JOIN managers m ON m.id = p.manager_id
+         INNER JOIN projects p
+           ON p.id = pm.project_id
+         LEFT JOIN managers m
+           ON m.id = p.manager_id
          WHERE pm.employee_id = $1
          ORDER BY p.deadline ASC`,
         [employeeId]
       ),
 
-      // Existing employment documents.
       query(
         `SELECT
             id,
@@ -121,7 +128,6 @@ router.get('/dashboard', async (req, res) => {
         [employeeId]
       ),
 
-      // Employee verification documents.
       query(
         `SELECT
             id,
@@ -207,55 +213,58 @@ router.get('/profile', async (req, res) => {
    UPLOAD PROFILE PHOTO
 ========================================= */
 
-router.post('/profile/photo', imageUpload.single('photo'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({
+router.post(
+  '/profile/photo',
+  imageUpload.single('photo'),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: 'Upload a JPG, PNG or WEBP image (maximum 5 MB).'
+        });
+      }
+
+      const photo = `/api/files/${path.basename(req.file.path)}`;
+
+      const result = await query(
+        `UPDATE users
+         SET profile_photo = $1,
+             updated_at = NOW()
+         WHERE id = $2
+           AND deleted_at IS NULL
+         RETURNING profile_photo`,
+        [photo, req.user.id]
+      );
+
+      if (!result.rows.length) {
+        return res.status(404).json({
+          success: false,
+          message: 'Employee account not found.'
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'Profile photo updated successfully.',
+        profile_photo: result.rows[0].profile_photo
+      });
+    } catch (error) {
+      console.error('Profile photo upload error:', error);
+
+      return res.status(500).json({
         success: false,
-        message: 'Upload a JPG, PNG or WEBP image (maximum 5 MB).'
+        message: 'Unable to upload profile photo.'
       });
     }
-
-    const photo = `/api/files/${path.basename(req.file.path)}`;
-
-    const result = await query(
-      `UPDATE users
-       SET profile_photo = $1,
-           updated_at = NOW()
-       WHERE id = $2
-         AND deleted_at IS NULL
-       RETURNING profile_photo`,
-      [photo, req.user.id]
-    );
-
-    if (!result.rows.length) {
-      return res.status(404).json({
-        success: false,
-        message: 'Employee account not found.'
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: 'Profile photo updated successfully.',
-      profile_photo: result.rows[0].profile_photo
-    });
-  } catch (error) {
-    console.error('Profile photo upload error:', error);
-
-    return res.status(500).json({
-      success: false,
-      message: 'Unable to upload profile photo.'
-    });
   }
-});
+);
 
 /* =========================================
-   EMPLOYEE VERIFICATION DOCUMENTS
+   VERIFICATION DOCUMENTS
 ========================================= */
 
-// GET /api/employee/verification-documents
-// Employees can view only their own verification documents.
+// GET employee verification documents.
 router.get('/verification-documents', async (req, res) => {
   try {
     const result = await query(
@@ -295,119 +304,123 @@ router.get('/verification-documents', async (req, res) => {
    UPLOAD VERIFICATION DOCUMENT
 ========================================= */
 
-// POST /api/employee/verification-documents
-// multipart/form-data fields:
-// documentType = identity_proof | educational_proof | residential_proof
-// document = PDF file (maximum 300 KB)
-router.post('/verification-documents', handlePdfUpload, async (req, res) => {
-  let savedFilePath = null;
+router.post(
+  '/verification-documents',
+  handlePdfUpload,
+  async (req, res) => {
+    let savedFilePath = null;
 
-  try {
-    const employeeId = req.user.id;
-    const { documentType } = req.body;
+    try {
+      const employeeId = req.user.id;
+      const { documentType } = req.body;
 
-    const allowedTypes = {
-      identity_proof: 'Identity Proof',
-      educational_proof: 'Educational Proof',
-      residential_proof: 'Residential Proof'
-    };
+      const allowedTypes = {
+        identity_proof: 'Identity Proof',
+        educational_proof: 'Educational Proof',
+        residential_proof: 'Residential Proof'
+      };
 
-    if (!allowedTypes[documentType]) {
-      return res.status(400).json({
-        success: false,
-        message: 'Select a valid document category.'
-      });
-    }
-
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please select a PDF document.'
-      });
-    }
-
-    if (req.file.size > MAX_PDF_SIZE) {
-      return res.status(400).json({
-        success: false,
-        message: 'PDF file must be 300 KB or smaller.'
-      });
-    }
-
-    // Validate the actual PDF signature, not only its extension/MIME type.
-    const pdfSignature = req.file.buffer.subarray(0, 5).toString('ascii');
-
-    if (pdfSignature !== '%PDF-') {
-      return res.status(400).json({
-        success: false,
-        message: 'The selected file is not a valid PDF.'
-      });
-    }
-
-    const filename = `employee-${randomUUID()}.pdf`;
-    savedFilePath = path.join(UPLOAD_DIR, filename);
-
-    await fs.promises.writeFile(savedFilePath, req.file.buffer, {
-      flag: 'wx'
-    });
-
-    const title = allowedTypes[documentType];
-
-    const result = await query(
-      `INSERT INTO employee_documents (
-          employee_id,
-          document_type,
-          title,
-          file_name,
-          storage_path,
-          uploaded_at
-       )
-       VALUES ($1, $2, $3, $4, $5, NOW())
-       RETURNING
-          id,
-          document_type,
-          title,
-          file_name,
-          storage_path,
-          uploaded_at`,
-      [
-        employeeId,
-        documentType,
-        title,
-        path.basename(req.file.originalname),
-        filename
-      ]
-    );
-
-    return res.status(201).json({
-      success: true,
-      message: `${title} uploaded successfully.`,
-      document: result.rows[0]
-    });
-  } catch (error) {
-    if (savedFilePath) {
-      try {
-        await fs.promises.unlink(savedFilePath);
-      } catch (cleanupError) {
-        console.error('Uploaded file cleanup error:', cleanupError);
+      if (!allowedTypes[documentType]) {
+        return res.status(400).json({
+          success: false,
+          message: 'Select a valid document category.'
+        });
       }
+
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please select a PDF document.'
+        });
+      }
+
+      if (req.file.size > MAX_PDF_SIZE) {
+        return res.status(400).json({
+          success: false,
+          message: 'PDF file must be 300 KB or smaller.'
+        });
+      }
+
+      const pdfSignature = req.file.buffer
+        .subarray(0, 5)
+        .toString('ascii');
+
+      if (pdfSignature !== '%PDF-') {
+        return res.status(400).json({
+          success: false,
+          message: 'The selected file is not a valid PDF.'
+        });
+      }
+
+      const filename = `employee-${randomUUID()}.pdf`;
+
+      savedFilePath = path.join(UPLOAD_DIR, filename);
+
+      await fs.promises.writeFile(
+        savedFilePath,
+        req.file.buffer,
+        { flag: 'wx' }
+      );
+
+      const title = allowedTypes[documentType];
+
+      const result = await query(
+        `INSERT INTO employee_documents (
+            employee_id,
+            document_type,
+            title,
+            file_name,
+            storage_path,
+            uploaded_at
+         )
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         RETURNING
+            id,
+            document_type,
+            title,
+            file_name,
+            storage_path,
+            uploaded_at`,
+        [
+          employeeId,
+          documentType,
+          title,
+          path.basename(req.file.originalname),
+          filename
+        ]
+      );
+
+      return res.status(201).json({
+        success: true,
+        message: `${title} uploaded successfully.`,
+        document: result.rows[0]
+      });
+    } catch (error) {
+      if (savedFilePath) {
+        try {
+          await fs.promises.unlink(savedFilePath);
+        } catch (cleanupError) {
+          console.error('Uploaded file cleanup error:', cleanupError);
+        }
+      }
+
+      console.error('Verification document upload error:', error);
+
+      return res.status(500).json({
+        success: false,
+        message: 'Unable to upload verification document.'
+      });
     }
-
-    console.error('Verification document upload error:', error);
-
-    return res.status(500).json({
-      success: false,
-      message: 'Unable to upload verification document.'
-    });
   }
-});
+);
 
 /* =========================================
    EMPLOYEE LOGIN ACTIVITY
 ========================================= */
 
+// CREATE LOGIN ACTIVITY.
 // POST /api/employee/login-activity
-// Create one activity record after a successful employee login.
-// The employee ID is always taken from the authenticated token.
+
 router.post('/login-activity', requireEmployee, async (req, res) => {
   try {
     const allowedInitialStatuses = [
@@ -428,13 +441,20 @@ router.post('/login-activity', requireEmployee, async (req, res) => {
           location_status,
           user_agent
        )
-       SELECT id, $2, $3
+       SELECT
+          id,
+          $2,
+          $3
        FROM users
        WHERE id = $1
          AND role = 'employee'
          AND is_active = TRUE
          AND deleted_at IS NULL
-       RETURNING id, employee_id, logged_in_at, location_status`,
+       RETURNING
+          id,
+          employee_id,
+          logged_in_at,
+          location_status`,
       [
         req.user.id,
         locationStatus,
@@ -463,8 +483,46 @@ router.post('/login-activity', requireEmployee, async (req, res) => {
   }
 });
 
+// EMPLOYEE'S OWN LAST FIVE LOGIN RECORDS.
+// GET /api/employee/login-activity/me
+
+router.get('/login-activity/me', requireEmployee, async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT
+          id AS activity_id,
+          employee_id,
+          logged_in_at,
+          ended_at,
+          location_status,
+          latitude,
+          longitude,
+          accuracy,
+          location_updated_at
+       FROM employee_login_activity
+       WHERE employee_id = $1
+       ORDER BY logged_in_at DESC
+       LIMIT 5`,
+      [req.user.id]
+    );
+
+    return res.status(200).json({
+      success: true,
+      activities: result.rows
+    });
+  } catch (error) {
+    console.error('Employee login history error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to load your login history.'
+    });
+  }
+});
+
+// UPDATE LOCATION SHARING STATUS.
 // PATCH /api/employee/login-activity/:id/location-status
-// Employees can update only their own current activity status.
+
 router.patch(
   '/login-activity/:id/location-status',
   requireEmployee,
@@ -491,7 +549,9 @@ router.patch(
          WHERE id = $2
            AND employee_id = $3
            AND ended_at IS NULL
-         RETURNING id, location_status`,
+         RETURNING
+            id,
+            location_status`,
         [
           status,
           req.params.id,
@@ -521,9 +581,9 @@ router.patch(
   }
 );
 
+// SAVE BROWSER GPS LOCATION.
 // POST /api/employee/login-activity/:id/location
-// Save GPS coordinates only after the employee opts in
-// and browser permission is granted.
+
 router.post(
   '/login-activity/:id/location',
   requireEmployee,
@@ -560,22 +620,23 @@ router.post(
 
       const result = await query(
         `UPDATE employee_login_activity
-         SET latitude = $1,
-             longitude = $2,
-             accuracy = $3,
-             location_status = 'shared',
-             location_updated_at = NOW()
+         SET
+            latitude = $1,
+            longitude = $2,
+            accuracy = $3,
+            location_status = 'shared',
+            location_updated_at = NOW()
          WHERE id = $4
            AND employee_id = $5
            AND ended_at IS NULL
            AND location_status <> 'stopped'
          RETURNING
-           id,
-           latitude,
-           longitude,
-           accuracy,
-           location_status,
-           location_updated_at`,
+            id,
+            latitude,
+            longitude,
+            accuracy,
+            location_status,
+            location_updated_at`,
         [
           latitude,
           longitude,
@@ -607,8 +668,9 @@ router.post(
   }
 );
 
+// END LOGIN SESSION.
 // POST /api/employee/login-activity/:id/end
-// Mark the employee's login session as ended during sign-out.
+
 router.post(
   '/login-activity/:id/end',
   requireEmployee,

@@ -132,6 +132,7 @@ export default function App(){
   const [docFile,setDocFile] = useState(null);
   const [search,setSearch] = useState('');
   const [loginActivities,setLoginActivities] = useState([]);
+  const [myLoginActivities,setMyLoginActivities] = useState([]);
   const [activityId,setActivityId] = useState(null);
   const [locationStatus,setLocationStatus] = useState('not_asked');
 
@@ -167,8 +168,14 @@ export default function App(){
         setAdmin(a); setManagers(m.managers);
         setLoginActivities(activity.activities || []);
       } else {
-        const [d,p]=await Promise.all([api('/employee/dashboard'),api('/employee/profile')]);
+        const [d,p,history]=await Promise.all([
+          api('/employee/dashboard'),
+          api('/employee/profile'),
+          api('/employee/login-activity/me')
+        ]);
         setData(d); setProfile(p.profile);
+        setMyLoginActivities(history.activities || []);
+        if(history.activities?.[0]?.location_status) setLocationStatus(history.activities[0].location_status);
       }
     } catch(e){
       localStorage.removeItem('vyt_token');
@@ -261,6 +268,7 @@ export default function App(){
         {id:'projects',label:'My Projects',icon:FolderKanban},
         {id:'profile',label:'Profile',icon:UserRound},
         {id:'documents',label:'My Documents',icon:FileText},
+        {id:'login-activity',label:'Login Activity',icon:History},
         {id:'settings',label:'Settings',icon:Settings}
       ];
   return <div className="app-shell"><style>{motionCss}</style><ToastPopup error={error} success={notice}/>
@@ -272,6 +280,7 @@ export default function App(){
       {!isAdmin && page==='projects' && <Projects projects={data.projects}/>}
       {!isAdmin && page==='profile' && <Profile profile={profile} onPhoto={uploadPhoto}/>}
       {!isAdmin && page==='documents' && <Documents documents={data.documents||[]} verificationDocuments={data.verificationDocuments||[]} onUploadVerification={uploadVerificationDocument} busy={verificationBusy}/>}
+      {!isAdmin && page==='login-activity' && <EmployeeLoginActivity activities={myLoginActivities}/>}
       {!isAdmin && page==='settings' && <SettingsPanel onChange={()=>setPage('change-password')}/>}
       {isAdmin && page==='home' && <AdminHome admin={admin} setPage={setPage}/>}
       {isAdmin && page==='employees' && <AdminEmployees employees={admin.employees} form={employeeForm} setForm={setEmployeeForm} onSubmit={addEmployee} onStatus={updateStatus} onRemove={removeEmployee} onEdit={editEmployee} search={search} setSearch={setSearch}/>}
@@ -288,8 +297,8 @@ function Brand({compact=false}){return <div className="brand"><div className="br
 function Login({login,setLogin,onSubmit,error,loading}){return <div className="login-shell"><div className="login-visual"><div className="visual-top"><Brand/><span className="secure"><ShieldCheck size={15}/> SECURE WORKSPACE</span></div><div className="visual-copy"><div className="eyebrow light">PEOPLE · PROJECTS · PROGRESS</div><h1>Great work<br/>starts with a<br/><em>connected team.</em></h1><p>Your work, milestones and people — all in one place.</p><div className="visual-stats"><div><b>01</b><span>One workspace</span></div><div><b>24/7</b><span>Access your updates</span></div><div><b>100%</b><span>Team connected</span></div></div></div><div className="visual-foot">© {new Date().getFullYear()} Vyntara Technologies</div></div><div className="login-panel"><div className="login-form-wrap"><div className="mobile-brand"><Brand/></div><div className="eyebrow">WELCOME BACK</div><h2>Sign in to your portal</h2><p className="muted">Enter the credentials provided by your administrator.</p><form onSubmit={onSubmit} className="stack login-form"><Field label="Work email"><input type="email" placeholder="name@vyntaralabs.tech" required value={login.email} onChange={e=>setLogin({...login,email:e.target.value})}/></Field><Field label="Password"><input type="password" placeholder="Enter your password" required value={login.password} onChange={e=>setLogin({...login,password:e.target.value})}/></Field><button className="primary full" disabled={loading}>{loading?'Signing in...':'Sign in securely'} <span>→</span></button></form><div className="login-help"><LockKeyhole size={15}/> Your account is managed by Vyntara Technologies.</div><a className="back-site" href={homeUrl}>← Back to vyntaralabs.tech</a></div></div></div>}
 function Field({label,children}){return <label className="field"><span>{label}</span>{children}</label>}
 function Notice({error,success}){if(!error&&!success)return null;return <div className={`notice ${error?'error':'success'}`}>{error?<AlertCircle size={16}/>:<CheckCircle2 size={16}/>}<span>{error||success}</span></div>}
-function pageTitle(p,a){return ({home:a?'Overview':'Good to see you',employees:'Employee management',projects:a?'Project management':'My projects',profile:'My profile',documents:a?'Document centre':'My documents',managers:'Team leaders & managers','login-activity':'Employee login activity',settings:'Account settings'})[p]||'Account settings'}
-function pageSubtitle(p,a,u){return ({home:a?'A live view of your people and project operations.':`Welcome back, ${u?.name?.split(' ')[0]}. Here’s your work at a glance.`,employees:'Create accounts, manage access and review onboarding.',projects:a?'Create projects and assign employees, dates and managers.':'Track your assigned work, milestones and delivery dates.',profile:'Your verified employee information and profile photo.',documents:'Important employment documents, all in one place.',managers:'Manage the people leading your projects.','login-activity':'Review the latest five login sessions and voluntarily shared locations for each employee.',settings:'Manage your account security and password.'})[p]||''}
+function pageTitle(p,a){return ({home:a?'Overview':'Good to see you',employees:'Employee management',projects:a?'Project management':'My projects',profile:'My profile',documents:a?'Document centre':'My documents',managers:'Team leaders & managers','login-activity':a?'Employee login activity':'My login activity',settings:'Account settings'})[p]||'Account settings'}
+function pageSubtitle(p,a,u){return ({home:a?'A live view of your people and project operations.':`Welcome back, ${u?.name?.split(' ')[0]}. Here’s your work at a glance.`,employees:'Create accounts, manage access and review onboarding.',projects:a?'Create projects and assign employees, dates and managers.':'Track your assigned work, milestones and delivery dates.',profile:'Your verified employee information and profile photo.',documents:'Important employment documents, all in one place.',managers:'Manage the people leading your projects.','login-activity':a?'Review the latest five login sessions and voluntarily shared locations for each employee.':'Review your latest five portal login sessions and any location you chose to share.',settings:'Manage your account security and password.'})[p]||''}
 function Stat({label,value,sub,icon:Icon}){return <div className="stat-card"><div className="stat-top"><span>{label}</span><Icon size={18}/></div><strong>{value}</strong><small>{sub}</small></div>}
 function EmployeeHome({user,data,setPage}){const active=data.projects.filter(p=>p.status==='In Progress').length;return <><div className="welcome-card"><div><span className="welcome-tag">YOUR WORKSPACE</span><h2>Make today count, {user.name.split(' ')[0]}.</h2><p>Stay focused on your milestones. Your project details and team contacts are ready below.</p></div><div className="welcome-icon"><BriefcaseBusiness size={42}/></div></div><div className="stats-grid"><Stat label="Assigned projects" value={data.projects.length} sub="Across your workspace" icon={FolderKanban}/><Stat label="In progress" value={active} sub="Currently underway" icon={Clock3}/><Stat label="Documents" value={(data.documents||[]).length} sub="Available to view" icon={FileText}/></div><Section title="Your projects" action="View all" onClick={()=>setPage('projects')}/>{data.projects.length?<div className="project-grid">{data.projects.slice(0,3).map(p=><ProjectCard key={p.id} p={p}/>)}</div>:<Empty text="No projects have been assigned to you yet."/>}<Section title="Quick access"/><div className="quick-grid"><Quick icon={UserRound} title="Profile details" desc="View your employee information" onClick={()=>setPage('profile')}/><Quick icon={Award} title="Certificates & letters" desc="Access your employment documents" onClick={()=>setPage('documents')}/><Quick icon={Settings} title="Account settings" desc="Update your password" onClick={()=>setPage('settings')}/></div></>}
 function Section({title,action,onClick}){return <div className="section-head"><h3>{title}</h3>{action&&<button className="text-button" onClick={onClick}>{action} →</button>}</div>}
@@ -397,6 +406,37 @@ function AdminDocuments({docs,employees,form,setForm,file,setFile,onSubmit}){
   </>;
 }
 
+function EmployeeLoginActivity({activities=[]}){
+  function dateTime(value){
+    if(!value) return '—';
+    return new Date(value).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:true});
+  }
+  function statusLabel(status){
+    return ({not_asked:'Not requested',denied:'Permission denied',unavailable:'Location unavailable',shared:'Location shared',stopped:'Sharing stopped'})[status] || status || 'Unknown';
+  }
+  const records=[...activities].sort((a,b)=>new Date(b.logged_in_at)-new Date(a.logged_in_at)).slice(0,5);
+  return <div className="login-activity-page">
+    <div className="content-card activity-intro">
+      <div className="activity-intro-icon"><History size={24}/></div>
+      <div><h3>Your login history</h3><p>Your latest five recorded portal sessions. Your location appears only for sessions where you enabled browser location sharing.</p></div>
+    </div>
+    {!records.length ? <Empty text="Your login history will appear here after your next sign-in."/> :
+      <div className="content-card activity-employee-card">
+        <div className="activity-table-wrap"><table><thead><tr><th>LOGIN DATE &amp; TIME</th><th>SESSION STATUS</th><th>LOCATION STATUS</th><th>LAST LOCATION UPDATE</th><th>GPS LOCATION</th></tr></thead><tbody>
+          {records.map(record=><tr key={record.activity_id || record.id}>
+            <td><b>{dateTime(record.logged_in_at)}</b></td>
+            <td>{record.ended_at ? `Ended ${dateTime(record.ended_at)}` : 'Current / end not recorded'}</td>
+            <td><span className={`status ${record.location_status==='shared'?'completed':'pending'}`}>{statusLabel(record.location_status)}</span></td>
+            <td>{dateTime(record.location_updated_at)}</td>
+            <td>{record.latitude != null && record.longitude != null ?
+              <a className="activity-map-link" href={`https://www.google.com/maps?q=${record.latitude},${record.longitude}`} target="_blank" rel="noreferrer"><MapPin size={15}/> View my shared location <ExternalLink size={13}/></a> :
+              <span className="muted tiny">Not shared</span>}</td>
+          </tr>)}
+        </tbody></table></div>
+      </div>}
+  </div>;
+}
+
 function AdminLoginActivity({activities=[],onRefresh}){
   const employees=[...new Map(activities.map(item=>[item.employee_id,{id:item.employee_id,name:item.employee_name,code:item.employee_code,email:item.email,jobTitle:item.job_title}])).values()];
   function dateTime(value){
@@ -438,61 +478,153 @@ function EmployeeLocationSharing({activityId,status,onStatus}){
   const [message,setMessage]=useState('');
   const [busy,setBusy]=useState(false);
 
+  async function savePosition(position){
+    const coords=position.coords;
+    await api(`/employee/login-activity/${activityId}/location`,{
+      method:'POST',
+      body:JSON.stringify({
+        latitude:coords.latitude,
+        longitude:coords.longitude,
+        accuracy:coords.accuracy
+      })
+    });
+    onStatus('shared');
+    setMessage(`Location updated (accuracy approximately ${Math.round(coords.accuracy)} metres). The next update is in about five minutes.`);
+  }
+
+  // This effect only schedules later updates. The first permission request is
+  // deliberately made inside the Enable button handler below, following a
+  // direct user gesture so the browser permission prompt is reliable.
   useEffect(()=>{
     if(!sharing || !activityId) return;
     let active=true;
-
-    async function updateLocation(){
-      if(document.visibilityState !== 'visible') return;
-      if(!navigator.geolocation){
-        if(active){setMessage('Your browser does not support location sharing.');setSharing(false);onStatus('unavailable');}
-        try{await api(`/employee/login-activity/${activityId}/location-status`,{method:'PATCH',body:JSON.stringify({status:'unavailable'})});}catch(e){console.error(e);}
-        return;
-      }
+    const updateLocation=()=>{
+      if(!active || document.visibilityState!=='visible') return;
+      if(!navigator.geolocation) return;
       navigator.geolocation.getCurrentPosition(async position=>{
         if(!active) return;
         try{
-          await api(`/employee/login-activity/${activityId}/location`,{method:'POST',body:JSON.stringify({latitude:position.coords.latitude,longitude:position.coords.longitude,accuracy:position.coords.accuracy})});
-          if(active){onStatus('shared');setMessage('Location updated. The next update is scheduled in about five minutes.');}
-        }catch(e){if(active)setMessage(e.message || 'Unable to update location.');}
+          await api(`/employee/login-activity/${activityId}/location`,{
+            method:'POST',
+            body:JSON.stringify({
+              latitude:position.coords.latitude,
+              longitude:position.coords.longitude,
+              accuracy:position.coords.accuracy
+            })
+          });
+          if(active){
+            onStatus('shared');
+            setMessage(`Location updated (accuracy approximately ${Math.round(position.coords.accuracy)} metres).`);
+          }
+        }catch(error){
+          if(active) setMessage(error.message || 'Unable to update location.');
+        }
       },async geoError=>{
         if(!active) return;
         const nextStatus=geoError.code===1?'denied':'unavailable';
-        onStatus(nextStatus);setSharing(false);
-        setMessage(geoError.code===1?'Location permission was denied. You can change this in your browser settings.':'Your location is currently unavailable.');
-        try{await api(`/employee/login-activity/${activityId}/location-status`,{method:'PATCH',body:JSON.stringify({status:nextStatus})});}catch(e){console.error(e);}
-      },{enableHighAccuracy:true,timeout:15000,maximumAge:60000});
-    }
-
-    updateLocation();
+        setSharing(false);
+        onStatus(nextStatus);
+        setMessage(geoError.code===1
+          ? 'Browser location permission was denied. You can change this in your browser settings.'
+          : 'Your browser could not determine your location.');
+        try{
+          await api(`/employee/login-activity/${activityId}/location-status`,{
+            method:'PATCH',
+            body:JSON.stringify({status:nextStatus})
+          });
+        }catch(error){console.error('Unable to save location status:',error);}
+      },{
+        enableHighAccuracy:true,
+        timeout:30000,
+        maximumAge:0
+      });
+    };
     const timer=window.setInterval(updateLocation,5*60*1000);
-    return ()=>{active=false;window.clearInterval(timer);};
+    const handleVisibility=()=>{if(document.visibilityState==='visible') updateLocation();};
+    document.addEventListener('visibilitychange',handleVisibility);
+    return ()=>{
+      active=false;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange',handleVisibility);
+    };
   },[sharing,activityId,onStatus]);
 
-  async function enableSharing(){
-    setBusy(true);setMessage('');
-    if(!navigator.geolocation){setMessage('Geolocation is not supported by this browser.');onStatus('unavailable');setBusy(false);return;}
-    setSharing(true);
-    setBusy(false);
+  function enableSharing(){
+    setMessage('');
+    if(!activityId){
+      setMessage('Your login session is not ready. Please refresh the page.');
+      return;
+    }
+    if(!navigator.geolocation){
+      setMessage('This browser does not support location sharing.');
+      onStatus('unavailable');
+      return;
+    }
+
+    // Must remain directly inside the click handler: this is the browser's
+    // native Geolocation API, not IP-based website location.
+    setBusy(true);
+    navigator.geolocation.getCurrentPosition(async position=>{
+      try{
+        await savePosition(position);
+        setSharing(true);
+      }catch(error){
+        setMessage(error.message || 'Unable to save your location.');
+      }finally{
+        setBusy(false);
+      }
+    },async geoError=>{
+      const nextStatus=geoError.code===1?'denied':'unavailable';
+      onStatus(nextStatus);
+      setSharing(false);
+      setMessage(geoError.code===1
+        ? 'You denied browser location permission. Allow location for this site in your browser settings if you want to share it.'
+        : 'Your browser could not determine your location. Please try again, preferably with device location enabled.');
+      try{
+        await api(`/employee/login-activity/${activityId}/location-status`,{
+          method:'PATCH',
+          body:JSON.stringify({status:nextStatus})
+        });
+      }catch(error){console.error('Unable to save location status:',error);}
+      setBusy(false);
+    },{
+      enableHighAccuracy:true,
+      timeout:30000,
+      maximumAge:0
+    });
   }
 
   async function stopSharing(){
-    setSharing(false);setBusy(true);
+    setSharing(false);
+    setBusy(true);
     try{
-      await api(`/employee/login-activity/${activityId}/location-status`,{method:'PATCH',body:JSON.stringify({status:'stopped'})});
-      onStatus('stopped');setMessage('Location sharing has been stopped.');
-    }catch(e){setMessage(e.message || 'Unable to stop location sharing.');}
-    finally{setBusy(false);}
+      await api(`/employee/login-activity/${activityId}/location-status`,{
+        method:'PATCH',
+        body:JSON.stringify({status:'stopped'})
+      });
+      onStatus('stopped');
+      setMessage('Location sharing has been stopped. No further updates will be sent.');
+    }catch(error){
+      setMessage(error.message || 'Unable to stop location sharing.');
+    }finally{
+      setBusy(false);
+    }
   }
 
   return <div className="content-card employee-location-card">
     <div className="location-card-icon"><MapPin size={22}/></div>
     <div className="location-card-content">
       <h3>Location sharing</h3>
-      <p>You can optionally share your GPS location with authorized administrators during this portal session. When enabled, your location is updated approximately every five minutes while this page is visible. Sharing stops when you stop it or sign out. Your browser will ask for permission.</p>
-      <div className="location-status-line"><span className={`status ${sharing?'completed':'pending'}`}>{sharing?'Location sharing ON':'Location sharing OFF'}</span><span className="muted tiny">Last status: {status.replaceAll('_',' ')}</span></div>
+      <p>Location sharing is optional. When you enable it, your browser asks for permission and sends your device location to authorized administrators. Updates occur approximately every five minutes while the portal is open and visible. You can stop sharing at any time or sign out to end the session.</p>
+      <div className="location-status-line">
+        <span className={`status ${sharing?'completed':'pending'}`}>{sharing?'Location sharing ON':'Location sharing OFF'}</span>
+        <span className="muted tiny">Last status: {String(status||'not_asked').replaceAll('_',' ')}</span>
+      </div>
       {message && <p className="location-message" role="status">{message}</p>}
-      {sharing ? <button className="secondary" type="button" onClick={stopSharing} disabled={busy}>Stop sharing</button> : <button className="primary" type="button" onClick={enableSharing} disabled={busy}><MapPin size={16}/> Enable location sharing</button>}
+      {sharing
+        ? <button className="secondary" type="button" onClick={stopSharing} disabled={busy}>Stop sharing</button>
+        : <button className="primary" type="button" onClick={enableSharing} disabled={busy}><MapPin size={16}/>{busy?'Requesting browser location...':'Enable location sharing'}</button>}
+      <p className="muted tiny">Note: Browser location accuracy depends on your device, operating system and browser settings. High accuracy is requested, but a desktop browser may still provide an approximate location rather than satellite GPS.</p>
     </div>
   </div>;
 }
