@@ -62,12 +62,61 @@ async function openAuthenticatedDocument(path) {
 }
 
 
+const motionCss = `
+@keyframes vyntaraFadeUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes vyntaraToastIn { from { opacity: 0; transform: translate3d(24px,-8px,0) scale(.97); } to { opacity: 1; transform: translate3d(0,0,0) scale(1); } }
+@keyframes vyntaraToastOut { to { opacity: 0; transform: translate3d(20px,-6px,0) scale(.98); } }
+@keyframes vyntaraPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); } 50% { box-shadow: 0 0 0 5px rgba(16,185,129,.10); } }
+.app-shell, .login-shell, .auth-shell { animation: vyntaraFadeUp .45s ease both; }
+.main > :not(.page-heading) { animation: vyntaraFadeUp .38s ease both; }
+.content-card, .stat-card, .project-card, .quick-card, .verification-card, .manager-card { transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease; }
+.content-card:hover, .stat-card:hover, .project-card:hover, .quick-card:hover, .verification-card:hover, .manager-card:hover { transform: translateY(-3px); box-shadow: 0 12px 30px rgba(15,23,42,.08); }
+button, .nav-item, .site-link { transition: transform .18s ease, filter .18s ease, background-color .18s ease; }
+button:active { transform: scale(.97); }
+button:disabled { cursor: wait; opacity: .65; }
+input, select, textarea { transition: border-color .18s ease, box-shadow .18s ease; }
+input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+.vyntara-toast-wrap { position: fixed; z-index: 99999; top: 22px; right: 22px; width: min(390px, calc(100vw - 32px)); display: grid; gap: 10px; pointer-events: none; }
+.vyntara-toast { display: flex; align-items: flex-start; gap: 11px; padding: 14px 16px; border-radius: 13px; background: #fff; color: #172033; border: 1px solid #e5e7eb; box-shadow: 0 16px 45px rgba(15,23,42,.17); animation: vyntaraToastIn .28s cubic-bezier(.2,.8,.2,1) both; pointer-events: auto; }
+.vyntara-toast.error { border-left: 4px solid #dc2626; }
+.vyntara-toast.success { border-left: 4px solid #16a34a; }
+.vyntara-toast-icon { flex: 0 0 auto; margin-top: 1px; }
+.vyntara-toast.error .vyntara-toast-icon { color: #dc2626; }
+.vyntara-toast.success .vyntara-toast-icon { color: #16a34a; }
+.vyntara-toast strong { display: block; font-size: 13px; margin-bottom: 2px; }
+.vyntara-toast span { display: block; font-size: 13px; line-height: 1.45; color: #475569; overflow-wrap: anywhere; }
+.vyntara-toast-close { margin-left: auto; border: 0; background: transparent; color: #64748b; padding: 0 2px; cursor: pointer; font-size: 18px; line-height: 1; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; } }
+`;
+
+function ToastPopup({ error='', success='' }) {
+  const [toast, setToast] = useState(null);
+  useEffect(() => {
+    const message = error || success;
+    if (!message) return;
+    setToast({ type: error ? 'error' : 'success', message, id: Date.now() });
+    const timer = window.setTimeout(() => setToast(null), 4200);
+    return () => window.clearTimeout(timer);
+  }, [error, success]);
+  if (!toast) return null;
+  const isError = toast.type === 'error';
+  return <div className="vyntara-toast-wrap" role="status" aria-live="polite">
+    <div className={`vyntara-toast ${toast.type}`} key={toast.id}>
+      <span className="vyntara-toast-icon">{isError ? <AlertCircle size={19}/> : <CheckCircle2 size={19}/>}</span>
+      <div><strong>{isError ? 'Something went wrong' : 'Successful'}</strong><span>{toast.message}</span></div>
+      <button className="vyntara-toast-close" aria-label="Dismiss notification" onClick={() => setToast(null)}>×</button>
+    </div>
+  </div>;
+}
+
+
 export default function App(){
   const [token,setToken] = useState(getToken());
   const [user,setUser] = useState(null);
   const [page,setPage] = useState('home');
   const [menu,setMenu] = useState(false);
-  const [data,setData] = useState({projects:[],documents:[]});
+  const [data,setData] = useState({projects:[],documents:[],verificationDocuments:[]});
+  const [verificationBusy,setVerificationBusy] = useState(false);
   const [profile,setProfile] = useState(null);
   const [admin,setAdmin] = useState({employees:[],projects:[],documents:[]});
   const [managers,setManagers] = useState([]);
@@ -98,12 +147,13 @@ export default function App(){
     finally { setLoading(false); }
   }
   useEffect(()=>{ if(token) load(); else setLoading(false); },[token]);
+  useEffect(()=>{ if(!error && !notice) return; const timer=window.setTimeout(()=>{setError('');setNotice('');},4600); return ()=>window.clearTimeout(timer); },[error,notice]);
   async function doLogin(e){
-    e.preventDefault(); setError(''); setLoading(true);
-    try { const r=await api('/auth/login',{method:'POST',body:JSON.stringify(login)}); localStorage.setItem('vyt_token',r.token); setToken(r.token); setUser(r.user); setPage(r.user.must_change_password?'change-password':'home'); }
+    e.preventDefault(); setError(''); setNotice(''); setLoading(true);
+    try { const r=await api('/auth/login',{method:'POST',body:JSON.stringify(login)}); localStorage.setItem('vyt_token',r.token); setToken(r.token); setUser(r.user); setPage(r.user.must_change_password?'change-password':'home'); setNotice('Signed in successfully.'); }
     catch(e){setError(e.message);} finally{setLoading(false);}
   }
-  function logout(){localStorage.removeItem('vyt_token');setToken(null);setUser(null);setPage('home');setMenu(false);}
+  function logout(){setNotice('Signed out successfully.');setError('');localStorage.removeItem('vyt_token');setToken(null);setUser(null);setPage('home');setMenu(false);}
   async function changePassword(e){
     e.preventDefault(); setError('');
     if(pw.newPassword!==pw.confirm) return setError('New passwords do not match.');
@@ -121,26 +171,39 @@ export default function App(){
     const dateOfExpiry=prompt('Date of expiry (YYYY-MM-DD, blank for none)',emp.date_of_expiry?String(emp.date_of_expiry).slice(0,10):''); if(dateOfExpiry===null)return;
     try{await api(`/admin/employees/${emp.id}`,{method:'PATCH',body:JSON.stringify({name,email,phone,jobTitle,dateOfJoining,dateOfExpiry:dateOfExpiry||null})});setNotice('Employee details updated.');await refreshAdmin();}catch(e){setError(e.message);}
   }
-  async function updateStatus(id,isActive){try{await api(`/admin/employees/${id}/status`,{method:'PATCH',body:JSON.stringify({isActive})});await refreshAdmin();}catch(e){setError(e.message);}}
-  async function removeEmployee(id){if(!confirm('Remove this employee? Their history is retained but they can no longer log in.'))return;try{await api(`/admin/employees/${id}`,{method:'DELETE'});await refreshAdmin();}catch(e){setError(e.message);}}
-  async function addProject(e){e.preventDefault();try{await api('/admin/projects',{method:'POST',body:JSON.stringify(projectForm)});setProjectForm({projectName:'',description:'',status:'Not Started',startDate:'',deadline:'',managerId:'',employeeIds:[]});setNotice('Project created.');await refreshAdmin();}catch(e){setError(e.message);}}
-  async function addManager(e){e.preventDefault();try{await api('/admin/managers',{method:'POST',body:JSON.stringify(managerForm)});setManagerForm({name:'',roleTitle:'Project Manager',email:'',phone:''});await refreshAdmin();setNotice('Manager added.');}catch(e){setError(e.message);}}
-  async function uploadDocument(e){e.preventDefault();if(!docFile)return setError('Choose a PDF file first.');const fd=new FormData();fd.append('document',docFile);fd.append('documentType',docForm.documentType);fd.append('title',docForm.title);try{await api(`/admin/employees/${docForm.employeeId}/documents`,{method:'POST',body:fd});setNotice('Document uploaded and visible to the employee.');setDocFile(null);await refreshAdmin();}catch(e){setError(e.message);}}
-  async function uploadPhoto(e){const file=e.target.files?.[0];if(!file)return;const fd=new FormData();fd.append('photo',file);try{await api('/employee/profile/photo',{method:'POST',body:fd});const p=await api('/employee/profile');setProfile(p.profile);setUser({...user,profile_photo:p.profile.profile_photo});setNotice('Profile photo updated.');}catch(e){setError(e.message);}}
+  async function updateStatus(id,isActive){try{await api(`/admin/employees/${id}/status`,{method:'PATCH',body:JSON.stringify({isActive})});await refreshAdmin();setNotice(isActive?'Employee account activated successfully.':'Employee account suspended successfully.');}catch(e){setError(e.message);}}
+  async function removeEmployee(id){if(!confirm('Remove this employee? Their history is retained but they can no longer log in.'))return;try{await api(`/admin/employees/${id}`,{method:'DELETE'});await refreshAdmin();setNotice('Employee account removed successfully.');}catch(e){setError(e.message);}}
+  async function addProject(e){e.preventDefault();setError('');try{await api('/admin/projects',{method:'POST',body:JSON.stringify(projectForm)});setProjectForm({projectName:'',description:'',status:'Not Started',startDate:'',deadline:'',managerId:'',employeeIds:[]});setNotice('Project created.');await refreshAdmin();}catch(e){setError(e.message);}}
+  async function addManager(e){e.preventDefault();setError('');try{await api('/admin/managers',{method:'POST',body:JSON.stringify(managerForm)});setManagerForm({name:'',roleTitle:'Project Manager',email:'',phone:''});await refreshAdmin();setNotice('Manager added.');}catch(e){setError(e.message);}}
+  async function uploadDocument(e){e.preventDefault();setError('');if(!docFile)return setError('Choose a PDF file first.');const fd=new FormData();fd.append('document',docFile);fd.append('documentType',docForm.documentType);fd.append('title',docForm.title);try{await api(`/admin/employees/${docForm.employeeId}/documents`,{method:'POST',body:fd});setNotice('Document uploaded and visible to the employee.');setDocFile(null);await refreshAdmin();}catch(e){setError(e.message);}}
+  async function uploadPhoto(e){const file=e.target.files?.[0];if(!file)return;setError('');const fd=new FormData();fd.append('photo',file);try{await api('/employee/profile/photo',{method:'POST',body:fd});const p=await api('/employee/profile');setProfile(p.profile);setUser({...user,profile_photo:p.profile.profile_photo});setNotice('Profile photo updated.');}catch(e){setError(e.message);}}
+  async function uploadVerificationDocument(documentType,file){
+    setError(''); setNotice('');
+    if(!file) { const message='Please choose a PDF file.'; setError(message); throw new Error(message); }
+    if(file.type!=='application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) { const message='Only PDF files are allowed.'; setError(message); throw new Error(message); }
+    if(file.size>300*1024) { const message='PDF must be 300 KB or smaller.'; setError(message); throw new Error(message); }
+    const fd=new FormData(); fd.append('documentType',documentType); fd.append('document',file);
+    setVerificationBusy(true);
+    try {
+      await api('/employee/verification-documents',{method:'POST',body:fd});
+      const d=await api('/employee/dashboard'); setData(d);
+      setNotice('Verification document uploaded successfully.');
+    } catch(e) { setError(e.message); throw e; }
+    finally { setVerificationBusy(false); }
+  }
   const isAdmin=user?.role==='admin';
   if(loading && !user) return <div className="loading"><div className="spinner"/>Loading Vyntara Portal...</div>;
-  if(!token || !user) return <Login login={login} setLogin={setLogin} onSubmit={doLogin} error={error} loading={loading}/>;
-  if(user.must_change_password || page==='change-password') return <div className="auth-shell"><div className="auth-card"><Brand/><div className="eyebrow">ACCOUNT SECURITY</div><h1>Set your new password</h1><p className="muted">For your security, you must change the temporary password before accessing the portal.</p><form onSubmit={changePassword} className="stack"><Field label="Current temporary password"><input type="password" required value={pw.currentPassword} onChange={e=>setPw({...pw,currentPassword:e.target.value})}/></Field><Field label="New password (minimum 10 characters)"><input type="password" minLength="10" required value={pw.newPassword} onChange={e=>setPw({...pw,newPassword:e.target.value})}/></Field><Field label="Confirm new password"><input type="password" minLength="10" required value={pw.confirm} onChange={e=>setPw({...pw,confirm:e.target.value})}/></Field><Notice error={error}/><button className="primary full">Update password</button></form></div></div>;
+  if(!token || !user) return <><style>{motionCss}</style><ToastPopup error={error} success={notice}/><Login login={login} setLogin={setLogin} onSubmit={doLogin} error={error} loading={loading}/></>;
+  if(user.must_change_password || page==='change-password') return <><style>{motionCss}</style><ToastPopup error={error} success={notice}/><div className="auth-shell"><div className="auth-card"><Brand/><div className="eyebrow">ACCOUNT SECURITY</div><h1>Set your new password</h1><p className="muted">For your security, you must change the temporary password before accessing the portal.</p><form onSubmit={changePassword} className="stack"><Field label="Current temporary password"><input type="password" required value={pw.currentPassword} onChange={e=>setPw({...pw,currentPassword:e.target.value})}/></Field><Field label="New password (minimum 10 characters)"><input type="password" minLength="10" required value={pw.newPassword} onChange={e=>setPw({...pw,newPassword:e.target.value})}/></Field><Field label="Confirm new password"><input type="password" minLength="10" required value={pw.confirm} onChange={e=>setPw({...pw,confirm:e.target.value})}/></Field><button className="primary full">Update password</button></form></div></div></>;
   const nav = isAdmin ? [{id:'home',label:'Overview',icon:Home},{id:'employees',label:'Employees',icon:Users},{id:'projects',label:'Projects',icon:FolderKanban},{id:'managers',label:'Managers',icon:BriefcaseBusiness},{id:'documents',label:'Documents',icon:FileText},{id:'settings',label:'Settings',icon:Settings}] : [{id:'home',label:'Home',icon:Home},{id:'projects',label:'My Projects',icon:FolderKanban},{id:'profile',label:'Profile',icon:UserRound},{id:'documents',label:'My Documents',icon:FileText},{id:'settings',label:'Settings',icon:Settings}];
-  return <div className="app-shell">
+  return <div className="app-shell"><style>{motionCss}</style><ToastPopup error={error} success={notice}/>
     <header className="topbar"><a className="brand-link" href={homeUrl}><Brand compact/></a><div className="top-actions"><a className="site-link" href={homeUrl} target="_blank" rel="noreferrer">Vyntara website <ExternalLink size={14}/></a><button className="avatar-button" onClick={()=>setPage('profile')}>{user.profile_photo?<img src={fileUrl(user.profile_photo)} />:<span>{user.name?.[0]}</span>}</button><button className="mobile-menu" onClick={()=>setMenu(!menu)}>{menu?<X/>:<Menu/>}</button></div></header>
     <div className="layout"><aside className={`sidebar ${menu?'open':''}`}><div className="side-user"><div className="avatar">{user.profile_photo?<img src={fileUrl(user.profile_photo)}/>:user.name?.[0]}</div><div><b>{user.name}</b><small>{isAdmin?'Administrator':user.employee_code}</small></div></div><div className="nav-label">WORKSPACE</div>{nav.map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>{setPage(n.id);setMenu(false);setError('');}}><n.icon size={18}/>{n.label}</button>)}<div className="sidebar-bottom"><button className="nav-item" onClick={logout}><LogOut size={18}/>Sign out</button><small>Vyntara Technologies · Employee Portal</small></div></aside>
     <main className="main"><div className="page-heading"><div><div className="eyebrow">{isAdmin?'ADMINISTRATION':'EMPLOYEE WORKSPACE'}</div><h1>{pageTitle(page,isAdmin)}</h1><p>{pageSubtitle(page,isAdmin,user)}</p></div><div className="heading-date"><CalendarDays size={16}/>{new Date().toLocaleDateString('en-IN',{weekday:'short',day:'2-digit',month:'short',year:'numeric'})}</div></div>
-      <Notice error={error} success={notice}/>{notice&&<button className="notice-clear" onClick={()=>setNotice('')}>Dismiss</button>}
       {!isAdmin && page==='home' && <EmployeeHome user={user} data={data} setPage={setPage}/>}
       {!isAdmin && page==='projects' && <Projects projects={data.projects}/>}
       {!isAdmin && page==='profile' && <Profile profile={profile} onPhoto={uploadPhoto}/>}
-      {!isAdmin && page==='documents' && <Documents documents={data.documents}/>}
+      {!isAdmin && page==='documents' && <Documents documents={data.documents||[]} verificationDocuments={data.verificationDocuments||[]} onUploadVerification={uploadVerificationDocument} busy={verificationBusy}/>}
       {!isAdmin && page==='settings' && <SettingsPanel onChange={()=>setPage('change-password')}/>}
       {isAdmin && page==='home' && <AdminHome admin={admin} setPage={setPage}/>}
       {isAdmin && page==='employees' && <AdminEmployees employees={admin.employees} form={employeeForm} setForm={setEmployeeForm} onSubmit={addEmployee} onStatus={updateStatus} onRemove={removeEmployee} onEdit={editEmployee} search={search} setSearch={setSearch}/>}
@@ -153,20 +216,44 @@ export default function App(){
 }
 
 function Brand({compact=false}){return <div className="brand"><div className="brand-mark">V</div>{!compact&&<div><strong>VYNTARA</strong><small>TECHNOLOGIES</small></div>}</div>}
-function Login({login,setLogin,onSubmit,error,loading}){return <div className="login-shell"><div className="login-visual"><div className="visual-top"><Brand/><span className="secure"><ShieldCheck size={15}/> SECURE WORKSPACE</span></div><div className="visual-copy"><div className="eyebrow light">PEOPLE · PROJECTS · PROGRESS</div><h1>Great work<br/>starts with a<br/><em>connected team.</em></h1><p>Your work, milestones and people — all in one place.</p><div className="visual-stats"><div><b>01</b><span>One workspace</span></div><div><b>24/7</b><span>Access your updates</span></div><div><b>100%</b><span>Team connected</span></div></div></div><div className="visual-foot">© {new Date().getFullYear()} Vyntara Technologies</div></div><div className="login-panel"><div className="login-form-wrap"><div className="mobile-brand"><Brand/></div><div className="eyebrow">WELCOME BACK</div><h2>Sign in to your portal</h2><p className="muted">Enter the credentials provided by your administrator.</p><form onSubmit={onSubmit} className="stack login-form"><Field label="Work email"><input type="email" placeholder="name@vyntaralabs.tech" required value={login.email} onChange={e=>setLogin({...login,email:e.target.value})}/></Field><Field label="Password"><input type="password" placeholder="Enter your password" required value={login.password} onChange={e=>setLogin({...login,password:e.target.value})}/></Field><Notice error={error}/><button className="primary full" disabled={loading}>{loading?'Signing in...':'Sign in securely'} <span>→</span></button></form><div className="login-help"><LockKeyhole size={15}/> Your account is managed by Vyntara Technologies.</div><a className="back-site" href={homeUrl}>← Back to vyntaralabs.tech</a></div></div></div>}
+function Login({login,setLogin,onSubmit,error,loading}){return <div className="login-shell"><div className="login-visual"><div className="visual-top"><Brand/><span className="secure"><ShieldCheck size={15}/> SECURE WORKSPACE</span></div><div className="visual-copy"><div className="eyebrow light">PEOPLE · PROJECTS · PROGRESS</div><h1>Great work<br/>starts with a<br/><em>connected team.</em></h1><p>Your work, milestones and people — all in one place.</p><div className="visual-stats"><div><b>01</b><span>One workspace</span></div><div><b>24/7</b><span>Access your updates</span></div><div><b>100%</b><span>Team connected</span></div></div></div><div className="visual-foot">© {new Date().getFullYear()} Vyntara Technologies</div></div><div className="login-panel"><div className="login-form-wrap"><div className="mobile-brand"><Brand/></div><div className="eyebrow">WELCOME BACK</div><h2>Sign in to your portal</h2><p className="muted">Enter the credentials provided by your administrator.</p><form onSubmit={onSubmit} className="stack login-form"><Field label="Work email"><input type="email" placeholder="name@vyntaralabs.tech" required value={login.email} onChange={e=>setLogin({...login,email:e.target.value})}/></Field><Field label="Password"><input type="password" placeholder="Enter your password" required value={login.password} onChange={e=>setLogin({...login,password:e.target.value})}/></Field><button className="primary full" disabled={loading}>{loading?'Signing in...':'Sign in securely'} <span>→</span></button></form><div className="login-help"><LockKeyhole size={15}/> Your account is managed by Vyntara Technologies.</div><a className="back-site" href={homeUrl}>← Back to vyntaralabs.tech</a></div></div></div>}
 function Field({label,children}){return <label className="field"><span>{label}</span>{children}</label>}
 function Notice({error,success}){if(!error&&!success)return null;return <div className={`notice ${error?'error':'success'}`}>{error?<AlertCircle size={16}/>:<CheckCircle2 size={16}/>}<span>{error||success}</span></div>}
 function pageTitle(p,a){return ({home:a?'Overview':'Good to see you',employees:'Employee management',projects:a?'Project management':'My projects',profile:'My profile',documents:a?'Document centre':'My documents',managers:'Team leaders & managers',settings:'Account settings'})[p]||'Account settings'}
 function pageSubtitle(p,a,u){return ({home:a?'A live view of your people and project operations.':`Welcome back, ${u?.name?.split(' ')[0]}. Here’s your work at a glance.`,employees:'Create accounts, manage access and review onboarding.',projects:a?'Create projects and assign employees, dates and managers.':'Track your assigned work, milestones and delivery dates.',profile:'Your verified employee information and profile photo.',documents:'Important employment documents, all in one place.',managers:'Manage the people leading your projects.',settings:'Manage your account security and password.'})[p]||''}
 function Stat({label,value,sub,icon:Icon}){return <div className="stat-card"><div className="stat-top"><span>{label}</span><Icon size={18}/></div><strong>{value}</strong><small>{sub}</small></div>}
-function EmployeeHome({user,data,setPage}){const active=data.projects.filter(p=>p.status==='In Progress').length;return <><div className="welcome-card"><div><span className="welcome-tag">YOUR WORKSPACE</span><h2>Make today count, {user.name.split(' ')[0]}.</h2><p>Stay focused on your milestones. Your project details and team contacts are ready below.</p></div><div className="welcome-icon"><BriefcaseBusiness size={42}/></div></div><div className="stats-grid"><Stat label="Assigned projects" value={data.projects.length} sub="Across your workspace" icon={FolderKanban}/><Stat label="In progress" value={active} sub="Currently underway" icon={Clock3}/><Stat label="Documents" value={data.documents.length} sub="Available to view" icon={FileText}/></div><Section title="Your projects" action="View all" onClick={()=>setPage('projects')}/>{data.projects.length?<div className="project-grid">{data.projects.slice(0,3).map(p=><ProjectCard key={p.id} p={p}/>)}</div>:<Empty text="No projects have been assigned to you yet."/>}<Section title="Quick access"/><div className="quick-grid"><Quick icon={UserRound} title="Profile details" desc="View your employee information" onClick={()=>setPage('profile')}/><Quick icon={Award} title="Certificates & letters" desc="Access your employment documents" onClick={()=>setPage('documents')}/><Quick icon={Settings} title="Account settings" desc="Update your password" onClick={()=>setPage('settings')}/></div></>}
+function EmployeeHome({user,data,setPage}){const active=data.projects.filter(p=>p.status==='In Progress').length;return <><div className="welcome-card"><div><span className="welcome-tag">YOUR WORKSPACE</span><h2>Make today count, {user.name.split(' ')[0]}.</h2><p>Stay focused on your milestones. Your project details and team contacts are ready below.</p></div><div className="welcome-icon"><BriefcaseBusiness size={42}/></div></div><div className="stats-grid"><Stat label="Assigned projects" value={data.projects.length} sub="Across your workspace" icon={FolderKanban}/><Stat label="In progress" value={active} sub="Currently underway" icon={Clock3}/><Stat label="Documents" value={(data.documents||[]).length} sub="Available to view" icon={FileText}/></div><Section title="Your projects" action="View all" onClick={()=>setPage('projects')}/>{data.projects.length?<div className="project-grid">{data.projects.slice(0,3).map(p=><ProjectCard key={p.id} p={p}/>)}</div>:<Empty text="No projects have been assigned to you yet."/>}<Section title="Quick access"/><div className="quick-grid"><Quick icon={UserRound} title="Profile details" desc="View your employee information" onClick={()=>setPage('profile')}/><Quick icon={Award} title="Certificates & letters" desc="Access your employment documents" onClick={()=>setPage('documents')}/><Quick icon={Settings} title="Account settings" desc="Update your password" onClick={()=>setPage('settings')}/></div></>}
 function Section({title,action,onClick}){return <div className="section-head"><h3>{title}</h3>{action&&<button className="text-button" onClick={onClick}>{action} →</button>}</div>}
 function ProjectCard({p}){return <div className="project-card"><div className="project-card-top"><span className="project-icon"><FolderKanban size={19}/></span><Status value={p.status}/></div><h3>{p.project_name}</h3><p>{p.description||'Project assignment and delivery milestones.'}</p><div className="project-dates"><div><small>START DATE</small><b>{date(p.start_date)}</b></div><div><small>DEADLINE</small><b>{date(p.deadline)}</b></div></div><div className="manager-line"><div className="mini-avatar">{p.manager_name?.[0]||'M'}</div><div><b>{p.manager_name||'Not assigned'}</b><small>{p.manager_role||'Project Manager'}</small></div><span className="manager-contact">{p.manager_email||''}<br/>{p.manager_phone||''}</span></div></div>}
 function Status({value}){return <span className={`status ${String(value).toLowerCase().replaceAll(' ','-')}`}>{value}</span>}
 function Projects({projects}){return <>{projects.length?<div className="project-grid">{projects.map(p=><ProjectCard key={p.id} p={p}/>)}</div>:<Empty text="Your project assignments will appear here once your manager adds you to a project."/>}</>}
 function Profile({profile,onPhoto}){if(!profile)return <Empty text="Profile is loading."/>;return <div className="content-card profile-card"><div className="profile-cover"/><div className="profile-main"><div className="profile-photo">{profile.profile_photo?<img src={fileUrl(profile.profile_photo)}/>:profile.name?.[0]}<label className="photo-edit"><Camera size={15}/><input type="file" accept="image/png,image/jpeg,image/webp" onChange={onPhoto}/></label></div><div><h2>{profile.name}</h2><p>{profile.job_title||'Employee'} · {profile.employee_code}</p></div><span className="verified"><ShieldCheck size={15}/> Verified profile</span></div><div className="profile-fields"><ReadOnly label="Full name" value={profile.name}/><ReadOnly label="Work email" value={profile.email}/><ReadOnly label="Phone number" value={profile.phone}/><ReadOnly label="Employee code" value={profile.employee_code}/><ReadOnly label="Date of joining" value={date(profile.date_of_joining)}/><ReadOnly label="Date of expiry" value={date(profile.date_of_expiry)}/></div><p className="profile-note"><LockKeyhole size={15}/> Your name, email, phone number and employee code are verified by HR and cannot be edited here. You can update only your profile photo.</p></div>}
 function ReadOnly({label,value}){return <div className="readonly"><small>{label}</small><b>{value||'—'}</b></div>}
-function Documents({documents}){const groups=[['offer_letter','Offer letters'],['completion_certificate','Completion certificates'],['recommendation_letter','Letters of recommendation'],['certificate','Certificates'],['other','Other documents']];return <div className="document-groups">{groups.map(([type,label])=>{const list=documents.filter(d=>d.document_type===type);return <div className="content-card doc-group" key={type}><div className="doc-group-title"><span className="doc-icon"><FileText/></span><div><h3>{label}</h3><small>{list.length} document{list.length===1?'':'s'}</small></div></div>{list.length?list.map(d=><DocumentRow key={d.id} d={d}/>):<p className="empty-inline">No documents uploaded yet.</p>}</div>})}</div>}
+function Documents({documents=[],verificationDocuments=[],onUploadVerification,busy=false}){
+  const groups=[['offer_letter','Offer letters'],['completion_certificate','Completion certificates'],['recommendation_letter','Letters of recommendation'],['certificate','Certificates'],['other','Other documents']];
+  const required=[['identity_proof','Identity proof'],['educational_proof','Educational proof'],['residential_proof','Residential proof']];
+  return <div className="document-groups">
+    <div className="content-card form-card">
+      <div className="card-title"><div><h3><ShieldCheck size={18}/> Mandatory verification documents</h3><p>Upload all three documents as PDF files. Maximum file size: 300 KB per document.</p></div></div>
+      <div className="verification-grid">{required.map(([type,label])=>{
+        const uploaded=verificationDocuments.find(d=>d.document_type===type);
+        return <VerificationUploadCard key={type} type={type} label={label} uploaded={uploaded} onUpload={onUploadVerification} busy={busy}/>;
+      })}</div>
+      <p className="muted tiny">Your documents are private and can be viewed only by you and authorized administrators.</p>
+    </div>
+    {groups.map(([type,label])=>{const list=documents.filter(d=>d.document_type===type);return <div className="content-card doc-group" key={type}><div className="doc-group-title"><span className="doc-icon"><FileText/></span><div><h3>{label}</h3><small>{list.length} document{list.length===1?'':'s'}</small></div></div>{list.length?list.map(d=><DocumentRow key={d.id} d={d}/>):<p className="empty-inline">No documents uploaded yet.</p>}</div>})}
+  </div>;
+}
+function VerificationUploadCard({type,label,uploaded,onUpload,busy}){
+  const [file,setFile]=useState(null); const [localError,setLocalError]=useState('');
+  async function submit(e){e.preventDefault();setLocalError('');if(!file){setLocalError('Choose a PDF file first.');return;}try{await onUpload(type,file);setFile(null);e.target.reset();}catch(error){setLocalError(error.message||'Upload failed.');}}
+  return <div className="verification-card">
+    <div className="verification-card-head"><div className="doc-icon"><FileText/></div><div><h4>{label}</h4><span className={uploaded?'status completed':'status pending'}>{uploaded?'Uploaded':'Required'}</span></div></div>
+    {uploaded&&<div className="verification-uploaded"><CheckCircle2 size={15}/><span>{uploaded.file_name||uploaded.title||'PDF uploaded'} · {date(uploaded.uploaded_at)}</span></div>}
+    <form onSubmit={submit} className="verification-form"><input type="file" accept="application/pdf,.pdf" onChange={e=>{setFile(e.target.files?.[0]||null);setLocalError('');}}/><small>PDF only · Up to 300 KB</small>{localError&&<small className="field-error">{localError}</small>}<button className="secondary" type="submit" disabled={busy}>{busy?'Uploading...':uploaded?'Replace PDF':'Upload PDF'} <Upload size={15}/></button></form>
+    {uploaded&&<DocumentRow d={uploaded}/>}
+  </div>;
+}
 function DocumentRow({ d }) {
   const storagePath =
     typeof d?.storage_path === 'string' ? d.storage_path.trim() : '';
