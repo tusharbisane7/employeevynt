@@ -275,7 +275,7 @@ export default function App(){
     <header className="topbar"><a className="brand-link" href={homeUrl}><Brand compact/></a><div className="top-actions"><a className="site-link" href={homeUrl} target="_blank" rel="noreferrer">Vyntara website <ExternalLink size={14}/></a><button className="avatar-button" onClick={()=>setPage('profile')}>{user.profile_photo?<img src={fileUrl(user.profile_photo)} />:<span>{user.name?.[0]}</span>}</button><button className="mobile-menu" onClick={()=>setMenu(!menu)}>{menu?<X/>:<Menu/>}</button></div></header>
     <div className="layout"><aside className={`sidebar ${menu?'open':''}`}><div className="side-user"><div className="avatar">{user.profile_photo?<img src={fileUrl(user.profile_photo)}/>:user.name?.[0]}</div><div><b>{user.name}</b><small>{isAdmin?'Administrator':user.employee_code}</small></div></div><div className="nav-label">WORKSPACE</div>{nav.map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>{setPage(n.id);setMenu(false);setError('');}}><n.icon size={18}/>{n.label}</button>)}<div className="sidebar-bottom"><button className="nav-item" onClick={logout}><LogOut size={18}/>Sign out</button><small>Vyntara Technologies · Employee Portal</small></div></aside>
     <main className="main"><div className="page-heading"><div><div className="eyebrow">{isAdmin?'ADMINISTRATION':'EMPLOYEE WORKSPACE'}</div><h1>{pageTitle(page,isAdmin)}</h1><p>{pageSubtitle(page,isAdmin,user)}</p></div><div className="heading-date"><CalendarDays size={16}/>{new Date().toLocaleDateString('en-IN',{weekday:'short',day:'2-digit',month:'short',year:'numeric'})}</div></div>
-      {!isAdmin && activityId && <EmployeeLocationSharing activityId={activityId} status={locationStatus} onStatus={setLocationStatus}/>}
+      {!isAdmin && activityId && <EmployeeLocationSharing activityId={activityId} onStatus={setLocationStatus}/>}
       {!isAdmin && page==='home' && <EmployeeHome user={user} data={data} setPage={setPage}/>}
       {!isAdmin && page==='projects' && <Projects projects={data.projects}/>}
       {!isAdmin && page==='profile' && <Profile profile={profile} onPhoto={uploadPhoto}/>}
@@ -473,158 +473,85 @@ function AdminLoginActivity({activities=[],onRefresh}){
   </div>;
 }
 
-function EmployeeLocationSharing({activityId,status,onStatus}){
-  const [sharing,setSharing]=useState(false);
-  const [message,setMessage]=useState('');
-  const [busy,setBusy]=useState(false);
-
-  async function savePosition(position){
-    const coords=position.coords;
-    await api(`/employee/login-activity/${activityId}/location`,{
-      method:'POST',
-      body:JSON.stringify({
-        latitude:coords.latitude,
-        longitude:coords.longitude,
-        accuracy:coords.accuracy
-      })
-    });
-    onStatus('shared');
-    setMessage(`Location updated (accuracy approximately ${Math.round(coords.accuracy)} metres). The next update is in about five minutes.`);
-  }
-
-  // This effect only schedules later updates. The first permission request is
-  // deliberately made inside the Enable button handler below, following a
-  // direct user gesture so the browser permission prompt is reliable.
+function EmployeeLocationSharing({activityId,onStatus}){
+  // Request the browser's native location permission automatically when the
+  // authenticated employee portal session becomes available. No custom card,
+  // button, status text, or IP-based location lookup is rendered.
   useEffect(()=>{
-    if(!sharing || !activityId) return;
+    if(!activityId) return;
     let active=true;
-    const updateLocation=()=>{
-      if(!active || document.visibilityState!=='visible') return;
-      if(!navigator.geolocation) return;
+    let sharing=true;
+    let requestInProgress=false;
+
+    const saveStatus=async status=>{
+      if(!active) return;
+      onStatus(status);
+      try{
+        await api(`/employee/login-activity/${activityId}/location-status`,{
+          method:'PATCH',
+          body:JSON.stringify({status})
+        });
+      }catch(error){
+        console.error('Unable to save browser location status:',error);
+      }
+    };
+
+    const requestLocation=()=>{
+      if(!active || !sharing || requestInProgress || document.visibilityState!=='visible') return;
+      if(!navigator.geolocation){
+        sharing=false;
+        saveStatus('unavailable');
+        return;
+      }
+
+      requestInProgress=true;
       navigator.geolocation.getCurrentPosition(async position=>{
-        if(!active) return;
         try{
+          if(!active || !sharing) return;
+          const coords=position.coords;
           await api(`/employee/login-activity/${activityId}/location`,{
             method:'POST',
             body:JSON.stringify({
-              latitude:position.coords.latitude,
-              longitude:position.coords.longitude,
-              accuracy:position.coords.accuracy
+              latitude:coords.latitude,
+              longitude:coords.longitude,
+              accuracy:coords.accuracy
             })
           });
-          if(active){
-            onStatus('shared');
-            setMessage(`Location updated (accuracy approximately ${Math.round(position.coords.accuracy)} metres).`);
-          }
+          if(active && sharing) onStatus('shared');
         }catch(error){
-          if(active) setMessage(error.message || 'Unable to update location.');
+          console.error('Unable to save employee location:',error);
+        }finally{
+          requestInProgress=false;
         }
-      },async geoError=>{
+      },error=>{
+        requestInProgress=false;
         if(!active) return;
-        const nextStatus=geoError.code===1?'denied':'unavailable';
-        setSharing(false);
-        onStatus(nextStatus);
-        setMessage(geoError.code===1
-          ? 'Browser location permission was denied. You can change this in your browser settings.'
-          : 'Your browser could not determine your location.');
-        try{
-          await api(`/employee/login-activity/${activityId}/location-status`,{
-            method:'PATCH',
-            body:JSON.stringify({status:nextStatus})
-          });
-        }catch(error){console.error('Unable to save location status:',error);}
+        const status=error.code===1?'denied':'unavailable';
+        if(error.code===1) sharing=false;
+        saveStatus(status);
       },{
         enableHighAccuracy:true,
         timeout:30000,
         maximumAge:0
       });
     };
-    const timer=window.setInterval(updateLocation,5*60*1000);
-    const handleVisibility=()=>{if(document.visibilityState==='visible') updateLocation();};
-    document.addEventListener('visibilitychange',handleVisibility);
+
+    // Calling the Geolocation API triggers the browser's own Allow / Block
+    // permission prompt when the site has not been granted a decision yet.
+    requestLocation();
+    const timer=window.setInterval(requestLocation,5*60*1000);
+    const onVisibilityChange=()=>{
+      if(document.visibilityState==='visible') requestLocation();
+    };
+    document.addEventListener('visibilitychange',onVisibilityChange);
+
     return ()=>{
       active=false;
+      sharing=false;
       window.clearInterval(timer);
-      document.removeEventListener('visibilitychange',handleVisibility);
+      document.removeEventListener('visibilitychange',onVisibilityChange);
     };
-  },[sharing,activityId,onStatus]);
+  },[activityId,onStatus]);
 
-  function enableSharing(){
-    setMessage('');
-    if(!activityId){
-      setMessage('Your login session is not ready. Please refresh the page.');
-      return;
-    }
-    if(!navigator.geolocation){
-      setMessage('This browser does not support location sharing.');
-      onStatus('unavailable');
-      return;
-    }
-
-    // Must remain directly inside the click handler: this is the browser's
-    // native Geolocation API, not IP-based website location.
-    setBusy(true);
-    navigator.geolocation.getCurrentPosition(async position=>{
-      try{
-        await savePosition(position);
-        setSharing(true);
-      }catch(error){
-        setMessage(error.message || 'Unable to save your location.');
-      }finally{
-        setBusy(false);
-      }
-    },async geoError=>{
-      const nextStatus=geoError.code===1?'denied':'unavailable';
-      onStatus(nextStatus);
-      setSharing(false);
-      setMessage(geoError.code===1
-        ? 'You denied browser location permission. Allow location for this site in your browser settings if you want to share it.'
-        : 'Your browser could not determine your location. Please try again, preferably with device location enabled.');
-      try{
-        await api(`/employee/login-activity/${activityId}/location-status`,{
-          method:'PATCH',
-          body:JSON.stringify({status:nextStatus})
-        });
-      }catch(error){console.error('Unable to save location status:',error);}
-      setBusy(false);
-    },{
-      enableHighAccuracy:true,
-      timeout:30000,
-      maximumAge:0
-    });
-  }
-
-  async function stopSharing(){
-    setSharing(false);
-    setBusy(true);
-    try{
-      await api(`/employee/login-activity/${activityId}/location-status`,{
-        method:'PATCH',
-        body:JSON.stringify({status:'stopped'})
-      });
-      onStatus('stopped');
-      setMessage('Location sharing has been stopped. No further updates will be sent.');
-    }catch(error){
-      setMessage(error.message || 'Unable to stop location sharing.');
-    }finally{
-      setBusy(false);
-    }
-  }
-
-  return <div className="content-card employee-location-card">
-    <div className="location-card-icon"><MapPin size={22}/></div>
-    <div className="location-card-content">
-      <h3>Location sharing</h3>
-      <p>Location sharing is optional. When you enable it, your browser asks for permission and sends your device location to authorized administrators. Updates occur approximately every five minutes while the portal is open and visible. You can stop sharing at any time or sign out to end the session.</p>
-      <div className="location-status-line">
-        <span className={`status ${sharing?'completed':'pending'}`}>{sharing?'Location sharing ON':'Location sharing OFF'}</span>
-        <span className="muted tiny">Last status: {String(status||'not_asked').replaceAll('_',' ')}</span>
-      </div>
-      {message && <p className="location-message" role="status">{message}</p>}
-      {sharing
-        ? <button className="secondary" type="button" onClick={stopSharing} disabled={busy}>Stop sharing</button>
-        : <button className="primary" type="button" onClick={enableSharing} disabled={busy}><MapPin size={16}/>{busy?'Requesting browser location...':'Enable location sharing'}</button>}
-      <p className="muted tiny">Note: Browser location accuracy depends on your device, operating system and browser settings. High accuracy is requested, but a desktop browser may still provide an approximate location rather than satellite GPS.</p>
-    </div>
-  </div>;
+  return null;
 }

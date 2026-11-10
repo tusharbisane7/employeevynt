@@ -319,3 +319,176 @@ button:disabled{
     scroll-behavior:auto!important
   }
 }
+
+/* =========================================================
+   VYNTARA PORTAL — POLISHED MOTION & INTERACTION LAYER
+   Added without changing the existing component structure.
+   ========================================================= */
+
+:root {
+  --motion-fast: 160ms;
+  --motion-normal: 240ms;
+  --motion-slow: 420ms;
+  --motion-ease: cubic-bezier(.2, .75, .25, 1);
+  --shadow-soft: 0 8px 24px rgba(20, 35, 65, .07);
+  --shadow-hover: 0 16px 36px rgba(20, 35, 65, .12);
+}
+
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+.app-shell, .login-shell, .auth-shell { isolation: isolate; }
+.page-heading { animation: vyntaraFadeUp .42s var(--motion-ease) both; }
+.sidebar { animation: vyntaraSidebarIn .38s var(--motion-ease) both; }
+
+@keyframes vyntaraSidebarIn {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes vyntaraSoftPop {
+  0% { opacity: 0; transform: scale(.96) translateY(8px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes vyntaraPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(74,115,190,0); }
+  50% { box-shadow: 0 0 0 6px rgba(74,115,190,.09); }
+}
+@keyframes vyntaraFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+.stats-grid .stat-card,
+.project-grid .project-card,
+.quick-grid .quick-card,
+.admin-shortcuts .quick-card,
+.verification-grid .verification-card,
+.manager-grid .manager-card {
+  animation: vyntaraSoftPop .48s var(--motion-ease) both;
+}
+.stats-grid > :nth-child(2),
+.project-grid > :nth-child(2),
+.quick-grid > :nth-child(2),
+.admin-shortcuts > :nth-child(2),
+.verification-grid > :nth-child(2),
+.manager-grid > :nth-child(2) { animation-delay: 55ms; }
+.stats-grid > :nth-child(3),
+.project-grid > :nth-child(3),
+.quick-grid > :nth-child(3),
+.admin-shortcuts > :nth-child(3),
+.verification-grid > :nth-child(3),
+.manager-grid > :nth-child(3) { animation-delay: 100ms; }
+.stats-grid > :nth-child(4),
+.project-grid > :nth-child(4),
+.verification-grid > :nth-child(4),
+.manager-grid > :nth-child(4) { animation-delay: 145ms; }
+
+.content-card, .stat-card, .project-card, .quick-card,
+.verification-card, .manager-card {
+  will-change: transform;
+  transition: transform var(--motion-normal) var(--motion-ease),
+    box-shadow var(--motion-normal) var(--motion-ease),
+    border-color var(--motion-normal) ease,
+    background-color var(--motion-normal) ease;
+}
+.content-card:hover, .stat-card:hover, .project-card:hover,
+.quick-card:hover, .verification-card:hover, .manager-card:hover {
+  border-color: #d5e0f3;
+  box-shadow: var(--shadow-hover);
+}
+.welcome-card { animation: vyntaraSoftPop .5s var(--motion-ease) both; }
+.welcome-icon { animation: vyntaraFloat 5s ease-in-out infinite; }
+
+.field input, .field select, .field textarea, .searchbox {
+  transition: border-color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease,
+    background-color var(--motion-fast) ease,
+    transform var(--motion-fast) ease;
+}
+.field input:focus, .field select:focus, .field textarea:focus {
+  transform: translateY(-1px);
+}
+.field input:focus-visible, .field select:focus-visible,
+.field textarea:focus-visible, button:focus-visible, a:focus-visible {
+  outline: 3px solid rgba(77,119,194,.24);
+  outline-offset: 2px;
+}
+
+.primary, .secondary, .text-button, .row-actions button,
+.avatar-button, .mobile-menu {
+  transition: transform var(--motion-fast) var(--motion-ease),
+    box-shadow var(--motion-fast) ease,
+    background-color var(--motion-fast) ease,
+    color var(--motion-fast) ease,
+    border-color var(--motion-fast) ease;
+}
+.primary:hover { transform: translateY(-2px); box-shadow: 0 9px 20px rgba(49,91,179,.24); }
+.secondary:hover { transform: translateY(-1px); border-color: #b8c9e8; background: #f7f9fe; }
+.text-button:hover, .download:hover, .site-link:hover { color: #244b9f; }
+.row-actions button:hover { transform: translateY(-2px); background: #f3f6fc; border-color: #cbd8ed; }
+.avatar-button:hover { transform: scale(1.06); }
+
+.nav-item {
+  position: relative;
+  overflow: hidden;
+  transition: color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease,
+    padding-left var(--motion-fast) ease;
+}
+.nav-item:hover { padding-left: 17px; }
+.nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 4px 4px 0;
+  background: #315bb3;
+}
+
+tbody tr { transition: background-color var(--motion-fast) ease; }
+tbody tr:hover { background: #f8faff; }
+.profile-photo { transition: box-shadow var(--motion-normal) ease, transform var(--motion-normal) ease; }
+.profile-photo:hover { transform: scale(1.035); box-shadow: 0 8px 22px rgba(49,91,179,.16); }
+.document-row { transition: background-color var(--motion-fast) ease, padding var(--motion-fast) ease; }
+.document-row:hover { background: #fafbfd; }
+.status, .role-chip, .verified, .code-pill {
+  transition: transform var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
+}
+.status:hover, .role-chip:hover { transform: translateY(-1px); }
+
+.vyntara-toast { backdrop-filter: blur(12px); }
+.vyntara-toast-close:hover { color: #172033; transform: rotate(90deg); }
+.loading .spinner { width: 32px; height: 32px; border-width: 3px; }
+.loading > span, .loading > p { animation: vyntaraPulse 1.8s ease-in-out infinite; }
+
+@media (max-width: 760px) {
+  .sidebar { animation: vyntaraSidebarIn .24s var(--motion-ease) both; overflow-y: auto; }
+  .main { width: 100%; overflow-x: hidden; }
+  .welcome-card:after { right: -90px; }
+  .top-actions { gap: 12px; }
+  .page-heading { gap: 12px; }
+  .table-wrap { -webkit-overflow-scrolling: touch; }
+}
+@media (max-width: 480px) {
+  .login-panel { padding: 24px 18px; }
+  .login-form-wrap h2 { font-size: 26px; }
+  .welcome-card { gap: 12px; padding: 19px; }
+  .welcome-card p { font-size: 10px; }
+  .welcome-icon { flex: 0 0 45px; width: 45px; height: 45px; }
+  .stats-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .stat-card strong { font-size: 21px; }
+  .profile-fields { gap: 15px; }
+  .vyntara-toast-wrap { top: 12px; right: 12px; width: calc(100vw - 24px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .content-card:hover, .stat-card:hover, .project-card:hover,
+  .quick-card:hover, .verification-card:hover, .manager-card:hover,
+  .primary:hover, .secondary:hover { transform: none; }
+}
