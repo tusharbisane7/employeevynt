@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, getToken, fileUrl } from './api';
-import { Home, FolderKanban, UserRound, Settings, FileText, Award, LogOut, Menu, X, ShieldCheck, Plus, Search, Users, CalendarDays, Clock3, Upload, LockKeyhole, ExternalLink, BriefcaseBusiness, CheckCircle2, AlertCircle, Camera, Trash2, Power, RefreshCw } from 'lucide-react';
+import { Home, FolderKanban, UserRound, Settings, FileText, Award, LogOut, Menu, X, ShieldCheck, Plus, Search, Users, CalendarDays, Clock3, Upload, LockKeyhole, ExternalLink, BriefcaseBusiness, CheckCircle2, AlertCircle, Camera, Trash2, Power, RefreshCw, MapPin, History } from 'lucide-react';
 
 const homeUrl = import.meta.env.VITE_HOME_URL || 'https://vyntaralabs.tech';
 const date = v => v ? new Date(v).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) : '—';
@@ -131,19 +131,50 @@ export default function App(){
   const [docForm,setDocForm] = useState({employeeId:'',documentType:'certificate',title:''});
   const [docFile,setDocFile] = useState(null);
   const [search,setSearch] = useState('');
+  const [loginActivities,setLoginActivities] = useState([]);
+  const [activityId,setActivityId] = useState(null);
+  const [locationStatus,setLocationStatus] = useState('not_asked');
 
   async function load(){
+    let loadedUserId = null;
     try {
-      const me = await api('/auth/me'); setUser(me.user);
+      const me = await api('/auth/me');
+      loadedUserId = me.user.id;
+      setUser(me.user);
+
+      // Create one activity record per authenticated browser tab/session.
+      if(me.user.role === 'employee') {
+        const activityKey = `vyt_activity_${me.user.id}`;
+        let savedActivityId = sessionStorage.getItem(activityKey);
+        if(!savedActivityId) {
+          const activity = await api('/employee/login-activity', {
+            method: 'POST',
+            body: JSON.stringify({ locationStatus: 'not_asked' })
+          });
+          savedActivityId = String(activity.activity.id);
+          sessionStorage.setItem(activityKey, savedActivityId);
+        }
+        setActivityId(savedActivityId);
+      }
+
       if(me.user.must_change_password){ setPage('change-password'); return; }
       if(me.user.role==='admin'){
-        const [a,m]=await Promise.all([api('/admin/overview'),api('/admin/managers')]);
+        const [a,m,activity]=await Promise.all([
+          api('/admin/overview'),
+          api('/admin/managers'),
+          api('/admin/login-activity')
+        ]);
         setAdmin(a); setManagers(m.managers);
+        setLoginActivities(activity.activities || []);
       } else {
         const [d,p]=await Promise.all([api('/employee/dashboard'),api('/employee/profile')]);
         setData(d); setProfile(p.profile);
       }
-    } catch(e){ localStorage.removeItem('vyt_token'); setToken(null); setUser(null); setError(e.message); }
+    } catch(e){
+      localStorage.removeItem('vyt_token');
+      if(loadedUserId) sessionStorage.removeItem(`vyt_activity_${loadedUserId}`);
+      setActivityId(null); setToken(null); setUser(null); setError(e.message);
+    }
     finally { setLoading(false); }
   }
   useEffect(()=>{ if(token) load(); else setLoading(false); },[token]);
@@ -153,14 +184,34 @@ export default function App(){
     try { const r=await api('/auth/login',{method:'POST',body:JSON.stringify(login)}); localStorage.setItem('vyt_token',r.token); setToken(r.token); setUser(r.user); setPage(r.user.must_change_password?'change-password':'home'); setNotice('Signed in successfully.'); }
     catch(e){setError(e.message);} finally{setLoading(false);}
   }
-  function logout(){setNotice('Signed out successfully.');setError('');localStorage.removeItem('vyt_token');setToken(null);setUser(null);setPage('home');setMenu(false);}
+  async function logout(){
+    try {
+      if(user?.role === 'employee' && activityId) {
+        await api(`/employee/login-activity/${activityId}/end`, { method: 'POST' });
+        sessionStorage.removeItem(`vyt_activity_${user.id}`);
+      }
+    } catch(e) { console.error('Unable to close login activity:', e); }
+    if(user?.id) sessionStorage.removeItem(`vyt_activity_${user.id}`);
+    setActivityId(null);
+    setNotice('Signed out successfully.'); setError('');
+    localStorage.removeItem('vyt_token'); setToken(null); setUser(null);
+    setPage('home'); setMenu(false);
+  }
   async function changePassword(e){
     e.preventDefault(); setError('');
     if(pw.newPassword!==pw.confirm) return setError('New passwords do not match.');
     try { await api('/auth/change-password',{method:'POST',body:JSON.stringify({currentPassword:pw.currentPassword,newPassword:pw.newPassword})}); setNotice('Password changed successfully.'); setPw({currentPassword:'',newPassword:'',confirm:''}); await load(); setPage('home'); }
     catch(e){setError(e.message);}
   }
-  async function refreshAdmin(){const [a,m]=await Promise.all([api('/admin/overview'),api('/admin/managers')]);setAdmin(a);setManagers(m.managers);}
+  async function refreshAdmin(){
+    const [a,m,activity]=await Promise.all([
+      api('/admin/overview'),
+      api('/admin/managers'),
+      api('/admin/login-activity')
+    ]);
+    setAdmin(a); setManagers(m.managers);
+    setLoginActivities(activity.activities || []);
+  }
   async function addEmployee(e){e.preventDefault();setError('');try{const r=await api('/admin/employees',{method:'POST',body:JSON.stringify(employeeForm)});setNotice(`Employee created: ${r.employee.employee_code}`);setEmployeeForm(initialForm);await refreshAdmin();}catch(e){setError(e.message);}}
   async function editEmployee(emp){
     const name=prompt('Employee name',emp.name); if(name===null)return;
@@ -195,11 +246,28 @@ export default function App(){
   if(loading && !user) return <div className="loading"><div className="spinner"/>Loading Vyntara Portal...</div>;
   if(!token || !user) return <><style>{motionCss}</style><ToastPopup error={error} success={notice}/><Login login={login} setLogin={setLogin} onSubmit={doLogin} error={error} loading={loading}/></>;
   if(user.must_change_password || page==='change-password') return <><style>{motionCss}</style><ToastPopup error={error} success={notice}/><div className="auth-shell"><div className="auth-card"><Brand/><div className="eyebrow">ACCOUNT SECURITY</div><h1>Set your new password</h1><p className="muted">For your security, you must change the temporary password before accessing the portal.</p><form onSubmit={changePassword} className="stack"><Field label="Current temporary password"><input type="password" required value={pw.currentPassword} onChange={e=>setPw({...pw,currentPassword:e.target.value})}/></Field><Field label="New password (minimum 10 characters)"><input type="password" minLength="10" required value={pw.newPassword} onChange={e=>setPw({...pw,newPassword:e.target.value})}/></Field><Field label="Confirm new password"><input type="password" minLength="10" required value={pw.confirm} onChange={e=>setPw({...pw,confirm:e.target.value})}/></Field><button className="primary full">Update password</button></form></div></div></>;
-  const nav = isAdmin ? [{id:'home',label:'Overview',icon:Home},{id:'employees',label:'Employees',icon:Users},{id:'projects',label:'Projects',icon:FolderKanban},{id:'managers',label:'Managers',icon:BriefcaseBusiness},{id:'documents',label:'Documents',icon:FileText},{id:'settings',label:'Settings',icon:Settings}] : [{id:'home',label:'Home',icon:Home},{id:'projects',label:'My Projects',icon:FolderKanban},{id:'profile',label:'Profile',icon:UserRound},{id:'documents',label:'My Documents',icon:FileText},{id:'settings',label:'Settings',icon:Settings}];
+  const nav = isAdmin
+    ? [
+        {id:'home',label:'Overview',icon:Home},
+        {id:'employees',label:'Employees',icon:Users},
+        {id:'projects',label:'Projects',icon:FolderKanban},
+        {id:'managers',label:'Managers',icon:BriefcaseBusiness},
+        {id:'documents',label:'Documents',icon:FileText},
+        {id:'login-activity',label:'Login Activity',icon:History},
+        {id:'settings',label:'Settings',icon:Settings}
+      ]
+    : [
+        {id:'home',label:'Home',icon:Home},
+        {id:'projects',label:'My Projects',icon:FolderKanban},
+        {id:'profile',label:'Profile',icon:UserRound},
+        {id:'documents',label:'My Documents',icon:FileText},
+        {id:'settings',label:'Settings',icon:Settings}
+      ];
   return <div className="app-shell"><style>{motionCss}</style><ToastPopup error={error} success={notice}/>
     <header className="topbar"><a className="brand-link" href={homeUrl}><Brand compact/></a><div className="top-actions"><a className="site-link" href={homeUrl} target="_blank" rel="noreferrer">Vyntara website <ExternalLink size={14}/></a><button className="avatar-button" onClick={()=>setPage('profile')}>{user.profile_photo?<img src={fileUrl(user.profile_photo)} />:<span>{user.name?.[0]}</span>}</button><button className="mobile-menu" onClick={()=>setMenu(!menu)}>{menu?<X/>:<Menu/>}</button></div></header>
     <div className="layout"><aside className={`sidebar ${menu?'open':''}`}><div className="side-user"><div className="avatar">{user.profile_photo?<img src={fileUrl(user.profile_photo)}/>:user.name?.[0]}</div><div><b>{user.name}</b><small>{isAdmin?'Administrator':user.employee_code}</small></div></div><div className="nav-label">WORKSPACE</div>{nav.map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>{setPage(n.id);setMenu(false);setError('');}}><n.icon size={18}/>{n.label}</button>)}<div className="sidebar-bottom"><button className="nav-item" onClick={logout}><LogOut size={18}/>Sign out</button><small>Vyntara Technologies · Employee Portal</small></div></aside>
     <main className="main"><div className="page-heading"><div><div className="eyebrow">{isAdmin?'ADMINISTRATION':'EMPLOYEE WORKSPACE'}</div><h1>{pageTitle(page,isAdmin)}</h1><p>{pageSubtitle(page,isAdmin,user)}</p></div><div className="heading-date"><CalendarDays size={16}/>{new Date().toLocaleDateString('en-IN',{weekday:'short',day:'2-digit',month:'short',year:'numeric'})}</div></div>
+      {!isAdmin && activityId && <EmployeeLocationSharing activityId={activityId} status={locationStatus} onStatus={setLocationStatus}/>}
       {!isAdmin && page==='home' && <EmployeeHome user={user} data={data} setPage={setPage}/>}
       {!isAdmin && page==='projects' && <Projects projects={data.projects}/>}
       {!isAdmin && page==='profile' && <Profile profile={profile} onPhoto={uploadPhoto}/>}
@@ -210,6 +278,7 @@ export default function App(){
       {isAdmin && page==='projects' && <AdminProjects projects={admin.projects} employees={admin.employees} managers={managers} form={projectForm} setForm={setProjectForm} onSubmit={addProject}/>}
       {isAdmin && page==='managers' && <Managers managers={managers} form={managerForm} setForm={setManagerForm} onSubmit={addManager}/>}
       {isAdmin && page==='documents' && <AdminDocuments docs={admin.documents} employees={admin.employees} form={docForm} setForm={setDocForm} file={docFile} setFile={setDocFile} onSubmit={uploadDocument}/>}
+      {isAdmin && page==='login-activity' && <AdminLoginActivity activities={loginActivities} onRefresh={refreshAdmin}/>}
       {isAdmin && page==='settings' && <SettingsPanel onChange={()=>setPage('change-password')}/>}
     </main></div>
   </div>;
@@ -219,8 +288,8 @@ function Brand({compact=false}){return <div className="brand"><div className="br
 function Login({login,setLogin,onSubmit,error,loading}){return <div className="login-shell"><div className="login-visual"><div className="visual-top"><Brand/><span className="secure"><ShieldCheck size={15}/> SECURE WORKSPACE</span></div><div className="visual-copy"><div className="eyebrow light">PEOPLE · PROJECTS · PROGRESS</div><h1>Great work<br/>starts with a<br/><em>connected team.</em></h1><p>Your work, milestones and people — all in one place.</p><div className="visual-stats"><div><b>01</b><span>One workspace</span></div><div><b>24/7</b><span>Access your updates</span></div><div><b>100%</b><span>Team connected</span></div></div></div><div className="visual-foot">© {new Date().getFullYear()} Vyntara Technologies</div></div><div className="login-panel"><div className="login-form-wrap"><div className="mobile-brand"><Brand/></div><div className="eyebrow">WELCOME BACK</div><h2>Sign in to your portal</h2><p className="muted">Enter the credentials provided by your administrator.</p><form onSubmit={onSubmit} className="stack login-form"><Field label="Work email"><input type="email" placeholder="name@vyntaralabs.tech" required value={login.email} onChange={e=>setLogin({...login,email:e.target.value})}/></Field><Field label="Password"><input type="password" placeholder="Enter your password" required value={login.password} onChange={e=>setLogin({...login,password:e.target.value})}/></Field><button className="primary full" disabled={loading}>{loading?'Signing in...':'Sign in securely'} <span>→</span></button></form><div className="login-help"><LockKeyhole size={15}/> Your account is managed by Vyntara Technologies.</div><a className="back-site" href={homeUrl}>← Back to vyntaralabs.tech</a></div></div></div>}
 function Field({label,children}){return <label className="field"><span>{label}</span>{children}</label>}
 function Notice({error,success}){if(!error&&!success)return null;return <div className={`notice ${error?'error':'success'}`}>{error?<AlertCircle size={16}/>:<CheckCircle2 size={16}/>}<span>{error||success}</span></div>}
-function pageTitle(p,a){return ({home:a?'Overview':'Good to see you',employees:'Employee management',projects:a?'Project management':'My projects',profile:'My profile',documents:a?'Document centre':'My documents',managers:'Team leaders & managers',settings:'Account settings'})[p]||'Account settings'}
-function pageSubtitle(p,a,u){return ({home:a?'A live view of your people and project operations.':`Welcome back, ${u?.name?.split(' ')[0]}. Here’s your work at a glance.`,employees:'Create accounts, manage access and review onboarding.',projects:a?'Create projects and assign employees, dates and managers.':'Track your assigned work, milestones and delivery dates.',profile:'Your verified employee information and profile photo.',documents:'Important employment documents, all in one place.',managers:'Manage the people leading your projects.',settings:'Manage your account security and password.'})[p]||''}
+function pageTitle(p,a){return ({home:a?'Overview':'Good to see you',employees:'Employee management',projects:a?'Project management':'My projects',profile:'My profile',documents:a?'Document centre':'My documents',managers:'Team leaders & managers','login-activity':'Employee login activity',settings:'Account settings'})[p]||'Account settings'}
+function pageSubtitle(p,a,u){return ({home:a?'A live view of your people and project operations.':`Welcome back, ${u?.name?.split(' ')[0]}. Here’s your work at a glance.`,employees:'Create accounts, manage access and review onboarding.',projects:a?'Create projects and assign employees, dates and managers.':'Track your assigned work, milestones and delivery dates.',profile:'Your verified employee information and profile photo.',documents:'Important employment documents, all in one place.',managers:'Manage the people leading your projects.','login-activity':'Review the latest five login sessions and voluntarily shared locations for each employee.',settings:'Manage your account security and password.'})[p]||''}
 function Stat({label,value,sub,icon:Icon}){return <div className="stat-card"><div className="stat-top"><span>{label}</span><Icon size={18}/></div><strong>{value}</strong><small>{sub}</small></div>}
 function EmployeeHome({user,data,setPage}){const active=data.projects.filter(p=>p.status==='In Progress').length;return <><div className="welcome-card"><div><span className="welcome-tag">YOUR WORKSPACE</span><h2>Make today count, {user.name.split(' ')[0]}.</h2><p>Stay focused on your milestones. Your project details and team contacts are ready below.</p></div><div className="welcome-icon"><BriefcaseBusiness size={42}/></div></div><div className="stats-grid"><Stat label="Assigned projects" value={data.projects.length} sub="Across your workspace" icon={FolderKanban}/><Stat label="In progress" value={active} sub="Currently underway" icon={Clock3}/><Stat label="Documents" value={(data.documents||[]).length} sub="Available to view" icon={FileText}/></div><Section title="Your projects" action="View all" onClick={()=>setPage('projects')}/>{data.projects.length?<div className="project-grid">{data.projects.slice(0,3).map(p=><ProjectCard key={p.id} p={p}/>)}</div>:<Empty text="No projects have been assigned to you yet."/>}<Section title="Quick access"/><div className="quick-grid"><Quick icon={UserRound} title="Profile details" desc="View your employee information" onClick={()=>setPage('profile')}/><Quick icon={Award} title="Certificates & letters" desc="Access your employment documents" onClick={()=>setPage('documents')}/><Quick icon={Settings} title="Account settings" desc="Update your password" onClick={()=>setPage('settings')}/></div></>}
 function Section({title,action,onClick}){return <div className="section-head"><h3>{title}</h3>{action&&<button className="text-button" onClick={onClick}>{action} →</button>}</div>}
@@ -306,4 +375,124 @@ function AdminEmployees({employees,form,setForm,onSubmit,onStatus,onRemove,onEdi
 function EmployeeTable({employees,onStatus,onRemove,onEdit,compact=false}){return <div className="table-wrap"><table><thead><tr><th>EMPLOYEE</th><th>CODE</th><th>JOINED</th><th>FIRST LOGIN PASSWORD</th><th>STATUS</th>{!compact&&<th>ACTIONS</th>}</tr></thead><tbody>{employees.map(e=><tr key={e.id}><td><b>{e.name}</b><small>{e.email}</small></td><td><span className="code-pill">{e.employee_code}</span></td><td>{date(e.date_of_joining)}</td><td>{e.must_change_password?<span className="status pending">Pending</span>:<span className="status completed">Changed</span>}</td><td><span className={`status ${e.is_active?'completed':'suspended'}`}>{e.is_active?'Active':'Suspended'}</span></td>{!compact&&<td><div className="row-actions"><button title="Edit employee details" onClick={()=>onEdit(e)}><UserRound size={15}/></button><button title={e.is_active?'Suspend':'Activate'} onClick={()=>onStatus(e.id,!e.is_active)}><Power size={15}/></button><button className="danger-icon" title="Remove" onClick={()=>onRemove(e.id)}><Trash2 size={15}/></button></div></td>}</tr>)}</tbody></table>{!employees.length&&<Empty text="No employees match your search."/>}</div>}
 function AdminProjects({projects,employees,managers,form,setForm,onSubmit}){return <><div className="content-card form-card"><div className="card-title"><div><h3><Plus size={18}/> Create project</h3><p>Set project ownership, dates and employee assignments.</p></div></div><form onSubmit={onSubmit} className="form-grid"><Field label="Project name"><input required value={form.projectName} onChange={e=>setForm({...form,projectName:e.target.value})}/></Field><Field label="Project status"><select value={form.status} onChange={e=>setForm({...form,status:e.target.value})}>{['Not Started','In Progress','On Hold','Completed','Cancelled'].map(s=><option>{s}</option>)}</select></Field><Field label="Start date"><input type="date" required value={form.startDate} onChange={e=>setForm({...form,startDate:e.target.value})}/></Field><Field label="Deadline"><input type="date" required value={form.deadline} onChange={e=>setForm({...form,deadline:e.target.value})}/></Field><Field label="Project manager / team leader"><select value={form.managerId} onChange={e=>setForm({...form,managerId:e.target.value})}><option value="">Select manager</option>{managers.map(m=><option value={m.id}>{m.name} — {m.role_title}</option>)}</select></Field><Field label="Assign employees"><select multiple value={form.employeeIds} onChange={e=>setForm({...form,employeeIds:[...e.target.selectedOptions].map(o=>o.value)})}>{employees.filter(e=>e.is_active).map(e=><option value={e.id}>{e.name} ({e.employee_code})</option>)}</select></Field><Field label="Description"><textarea rows="3" value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></Field><div className="form-end"><span className="muted tiny">Hold Ctrl/Cmd to select multiple employees.</span><button className="primary"><Plus size={16}/> Save project</button></div></form></div><Section title="All projects"/><div className="project-grid">{projects.map(p=><div className="project-card" key={p.id}><div className="project-card-top"><span className="project-icon"><FolderKanban/></span><Status value={p.status}/></div><h3>{p.project_name}</h3><p>{p.description||'No description added.'}</p><div className="project-dates"><div><small>START DATE</small><b>{date(p.start_date)}</b></div><div><small>DEADLINE</small><b>{date(p.deadline)}</b></div></div><div className="manager-line"><div className="mini-avatar">{p.manager_name?.[0]||'?'}</div><div><b>{p.manager_name||'No manager'}</b><small>Project manager</small></div></div></div>)}{!projects.length&&<Empty text="No projects created yet."/>}</div></>}
 function Managers({managers,form,setForm,onSubmit}){return <><div className="content-card form-card"><div className="card-title"><div><h3><Plus size={18}/> Add manager / team leader</h3><p>These details appear on employee project cards.</p></div></div><form className="form-grid" onSubmit={onSubmit}><Field label="Full name"><input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></Field><Field label="Role / designation"><input required value={form.roleTitle} onChange={e=>setForm({...form,roleTitle:e.target.value})}/></Field><Field label="Work email"><input type="email" required value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></Field><Field label="Contact number"><input required value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})}/></Field><div className="form-end"><span/><button className="primary"><Plus size={16}/> Add manager</button></div></form></div><div className="manager-grid">{managers.map(m=><div className="content-card manager-card"><div className="manager-avatar">{m.name[0]}</div><h3>{m.name}</h3><span className="role-chip">{m.role_title}</span><p>{m.email}</p><p>{m.phone}</p></div>)}{!managers.length&&<Empty text="Add a project manager or team leader to get started."/>}</div></>}
-function AdminDocuments({docs,employees,form,setForm,file,setFile,onSubmit}){return <><div className="content-card form-card"><div className="card-title"><div><h3><Upload size={18}/> Upload employee document</h3><p>Upload a PDF (maximum 10 MB). It becomes available in that employee’s portal.</p></div></div><form onSubmit={onSubmit} className="form-grid"><Field label="Employee"><select required value={form.employeeId} onChange={e=>setForm({...form,employeeId:e.target.value})}><option value="">Choose employee</option>{employees.map(e=><option value={e.id}>{e.name} ({e.employee_code})</option>)}</select></Field><Field label="Document category"><select value={form.documentType} onChange={e=>setForm({...form,documentType:e.target.value})}><option value="offer_letter">Offer letter</option><option value="completion_certificate">Completion certificate</option><option value="recommendation_letter">Letter of recommendation</option><option value="certificate">Certificate</option><option value="other">Other</option></select></Field><Field label="Document title"><input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></Field><Field label="PDF file"><input type="file" accept="application/pdf" required onChange={e=>setFile(e.target.files?.[0]||null)}/></Field><div className="form-end"><span className="muted tiny">{file?.name||'No file selected'}</span><button className="primary"><Upload size={16}/> Upload document</button></div></form></div><Section title="Recently uploaded documents"/><div className="content-card">{docs.map(d=><div className="document-row" key={d.id}><div className="pdf-icon">PDF</div><div className="doc-info"><b>{d.title}</b><small>{d.employee_name} · {d.employee_code} · {d.document_type.replaceAll('_',' ')}</small></div><span className="muted tiny">{date(d.uploaded_at)}</span></div>)}{!docs.length&&<Empty text="No documents uploaded yet."/>}</div></>}
+function AdminDocuments({docs,employees,form,setForm,file,setFile,onSubmit}){
+  return <>
+    <div className="content-card form-card">
+      <div className="card-title"><div><h3><Upload size={18}/> Upload employee document</h3><p>Upload a PDF (maximum 10 MB). It becomes available in that employee's portal.</p></div></div>
+      <form onSubmit={onSubmit} className="form-grid">
+        <Field label="Employee"><select required value={form.employeeId} onChange={e=>setForm({...form,employeeId:e.target.value})}><option value="">Choose employee</option>{employees.map(e=><option key={e.id} value={e.id}>{e.name} ({e.employee_code})</option>)}</select></Field>
+        <Field label="Document category"><select value={form.documentType} onChange={e=>setForm({...form,documentType:e.target.value})}><option value="offer_letter">Offer letter</option><option value="completion_certificate">Completion certificate</option><option value="recommendation_letter">Letter of recommendation</option><option value="certificate">Certificate</option><option value="other">Other</option></select></Field>
+        <Field label="Document title"><input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></Field>
+        <Field label="PDF file"><input type="file" accept="application/pdf,.pdf" required onChange={e=>setFile(e.target.files?.[0]||null)}/></Field>
+        <div className="form-end"><span className="muted tiny">{file?.name||'No file selected'}</span><button className="primary"><Upload size={16}/> Upload document</button></div>
+      </form>
+    </div>
+    <Section title="Employee uploaded documents"/>
+    <div className="content-card">
+      {docs.length ? docs.map(d=><div className="admin-document-item" key={d.id}>
+        <div className="admin-document-employee"><b>{d.employee_name || 'Employee'}</b><small>{d.employee_code || '—'} · {(d.document_type || 'document').replaceAll('_',' ')}</small></div>
+        <DocumentRow d={d}/>
+      </div>) : <Empty text="No employee documents have been uploaded yet."/>}
+    </div>
+  </>;
+}
+
+function AdminLoginActivity({activities=[],onRefresh}){
+  const employees=[...new Map(activities.map(item=>[item.employee_id,{id:item.employee_id,name:item.employee_name,code:item.employee_code,email:item.email,jobTitle:item.job_title}])).values()];
+  function dateTime(value){
+    if(!value) return '—';
+    return new Date(value).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:true});
+  }
+  function statusLabel(status){
+    return ({not_asked:'Not requested',denied:'Permission denied',unavailable:'Location unavailable',shared:'Location shared',stopped:'Sharing stopped'})[status] || status || 'Unknown';
+  }
+  return <div className="login-activity-page">
+    <div className="content-card activity-intro">
+      <div className="activity-intro-icon"><History size={24}/></div>
+      <div><h3>Employee login history</h3><p>Showing the latest five recorded login sessions per employee. GPS is displayed only when an employee enables location sharing.</p></div>
+      <button className="secondary activity-refresh" type="button" onClick={onRefresh}><RefreshCw size={15}/> Refresh</button>
+    </div>
+    {!employees.length ? <Empty text="No employee login activity has been recorded yet."/> : employees.map(employee=>{
+      const records=activities.filter(a=>a.employee_id===employee.id).sort((a,b)=>new Date(b.logged_in_at)-new Date(a.logged_in_at)).slice(0,5);
+      return <div className="content-card activity-employee-card" key={employee.id}>
+        <div className="activity-employee-heading">
+          <div className="activity-avatar">{employee.name?.[0] || 'E'}</div>
+          <div><h3>{employee.name}</h3><p>{employee.code} · {employee.email}</p><small>{employee.jobTitle || 'Employee'}</small></div>
+          <span className="count">{records.length} / 5 logins</span>
+        </div>
+        <div className="activity-table-wrap"><table><thead><tr><th>LOGIN DATE &amp; TIME</th><th>LOCATION STATUS</th><th>LAST LOCATION UPDATE</th><th>GPS LOCATION</th></tr></thead><tbody>
+          {records.map(record=><tr key={record.activity_id}>
+            <td><b>{dateTime(record.logged_in_at)}</b><small>{record.ended_at ? `Session ended: ${dateTime(record.ended_at)}` : 'Session end not recorded'}</small></td>
+            <td><span className={`status ${record.location_status==='shared'?'completed':'pending'}`}>{statusLabel(record.location_status)}</span></td>
+            <td>{dateTime(record.location_updated_at)}</td>
+            <td>{record.latitude != null && record.longitude != null ? <a className="activity-map-link" href={`https://www.google.com/maps?q=${record.latitude},${record.longitude}`} target="_blank" rel="noreferrer"><MapPin size={15}/> View map <ExternalLink size={13}/></a> : <span className="muted tiny">Not available</span>}</td>
+          </tr>)}
+        </tbody></table></div>
+      </div>;
+    })}
+  </div>;
+}
+
+function EmployeeLocationSharing({activityId,status,onStatus}){
+  const [sharing,setSharing]=useState(false);
+  const [message,setMessage]=useState('');
+  const [busy,setBusy]=useState(false);
+
+  useEffect(()=>{
+    if(!sharing || !activityId) return;
+    let active=true;
+
+    async function updateLocation(){
+      if(document.visibilityState !== 'visible') return;
+      if(!navigator.geolocation){
+        if(active){setMessage('Your browser does not support location sharing.');setSharing(false);onStatus('unavailable');}
+        try{await api(`/employee/login-activity/${activityId}/location-status`,{method:'PATCH',body:JSON.stringify({status:'unavailable'})});}catch(e){console.error(e);}
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(async position=>{
+        if(!active) return;
+        try{
+          await api(`/employee/login-activity/${activityId}/location`,{method:'POST',body:JSON.stringify({latitude:position.coords.latitude,longitude:position.coords.longitude,accuracy:position.coords.accuracy})});
+          if(active){onStatus('shared');setMessage('Location updated. The next update is scheduled in about five minutes.');}
+        }catch(e){if(active)setMessage(e.message || 'Unable to update location.');}
+      },async geoError=>{
+        if(!active) return;
+        const nextStatus=geoError.code===1?'denied':'unavailable';
+        onStatus(nextStatus);setSharing(false);
+        setMessage(geoError.code===1?'Location permission was denied. You can change this in your browser settings.':'Your location is currently unavailable.');
+        try{await api(`/employee/login-activity/${activityId}/location-status`,{method:'PATCH',body:JSON.stringify({status:nextStatus})});}catch(e){console.error(e);}
+      },{enableHighAccuracy:true,timeout:15000,maximumAge:60000});
+    }
+
+    updateLocation();
+    const timer=window.setInterval(updateLocation,5*60*1000);
+    return ()=>{active=false;window.clearInterval(timer);};
+  },[sharing,activityId,onStatus]);
+
+  async function enableSharing(){
+    setBusy(true);setMessage('');
+    if(!navigator.geolocation){setMessage('Geolocation is not supported by this browser.');onStatus('unavailable');setBusy(false);return;}
+    setSharing(true);
+    setBusy(false);
+  }
+
+  async function stopSharing(){
+    setSharing(false);setBusy(true);
+    try{
+      await api(`/employee/login-activity/${activityId}/location-status`,{method:'PATCH',body:JSON.stringify({status:'stopped'})});
+      onStatus('stopped');setMessage('Location sharing has been stopped.');
+    }catch(e){setMessage(e.message || 'Unable to stop location sharing.');}
+    finally{setBusy(false);}
+  }
+
+  return <div className="content-card employee-location-card">
+    <div className="location-card-icon"><MapPin size={22}/></div>
+    <div className="location-card-content">
+      <h3>Location sharing</h3>
+      <p>You can optionally share your GPS location with authorized administrators during this portal session. When enabled, your location is updated approximately every five minutes while this page is visible. Sharing stops when you stop it or sign out. Your browser will ask for permission.</p>
+      <div className="location-status-line"><span className={`status ${sharing?'completed':'pending'}`}>{sharing?'Location sharing ON':'Location sharing OFF'}</span><span className="muted tiny">Last status: {status.replaceAll('_',' ')}</span></div>
+      {message && <p className="location-message" role="status">{message}</p>}
+      {sharing ? <button className="secondary" type="button" onClick={stopSharing} disabled={busy}>Stop sharing</button> : <button className="primary" type="button" onClick={enableSharing} disabled={busy}><MapPin size={16}/> Enable location sharing</button>}
+    </div>
+  </div>;
+}

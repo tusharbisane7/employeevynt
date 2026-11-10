@@ -1,4 +1,3 @@
-
 import { Router } from 'express';
 import path from 'path';
 import fs from 'fs';
@@ -16,8 +15,20 @@ const MAX_PDF_SIZE = 300 * 1024;
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// All employee routes require authentication.
+// All employee routes require a valid login token.
 router.use(authenticate);
+
+// Login activity and location endpoints are employee-only.
+function requireEmployee(req, res, next) {
+  if (req.user?.role !== 'employee') {
+    return res.status(403).json({
+      success: false,
+      message: 'Employee access required.'
+    });
+  }
+
+  next();
+}
 
 /* =========================================
    PDF UPLOAD CONFIGURATION
@@ -25,22 +36,15 @@ router.use(authenticate);
 
 const pdfUpload = multer({
   storage: multer.memoryStorage(),
-
   limits: {
     fileSize: MAX_PDF_SIZE,
     files: 1
   },
-
   fileFilter: (req, file, callback) => {
     const extension = path.extname(file.originalname).toLowerCase();
 
-    if (
-      extension !== '.pdf' ||
-      file.mimetype !== 'application/pdf'
-    ) {
-      return callback(
-        new Error('Only PDF files are allowed.')
-      );
+    if (extension !== '.pdf' || file.mimetype !== 'application/pdf') {
+      return callback(new Error('Only PDF files are allowed.'));
     }
 
     callback(null, true);
@@ -50,9 +54,7 @@ const pdfUpload = multer({
 // Handle Multer errors with readable API responses.
 function handlePdfUpload(req, res, next) {
   pdfUpload.single('document')(req, res, (error) => {
-    if (!error) {
-      return next();
-    }
+    if (!error) return next();
 
     if (error.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({
@@ -76,73 +78,69 @@ router.get('/dashboard', async (req, res) => {
   try {
     const employeeId = req.user.id;
 
-    const [projects, documents, verificationDocuments] =
-      await Promise.all([
+    const [projects, documents, verificationDocuments] = await Promise.all([
+      // Assigned projects and manager information.
+      query(
+        `SELECT
+            p.id,
+            p.project_name,
+            p.description,
+            p.status,
+            p.start_date,
+            p.deadline,
+            m.id AS manager_id,
+            m.name AS manager_name,
+            m.role_title AS manager_role,
+            m.email AS manager_email,
+            m.phone AS manager_phone
+         FROM project_members pm
+         INNER JOIN projects p ON p.id = pm.project_id
+         LEFT JOIN managers m ON m.id = p.manager_id
+         WHERE pm.employee_id = $1
+         ORDER BY p.deadline ASC`,
+        [employeeId]
+      ),
 
-        // Assigned projects and manager information.
-        query(
-          `SELECT
-              p.id,
-              p.project_name,
-              p.description,
-              p.status,
-              p.start_date,
-              p.deadline,
-              m.id AS manager_id,
-              m.name AS manager_name,
-              m.role_title AS manager_role,
-              m.email AS manager_email,
-              m.phone AS manager_phone
-           FROM project_members pm
-           INNER JOIN projects p
-              ON p.id = pm.project_id
-           LEFT JOIN managers m
-              ON m.id = p.manager_id
-           WHERE pm.employee_id = $1
-           ORDER BY p.deadline ASC`,
-          [employeeId]
-        ),
-
-        // Existing employment documents.
-        query(
-          `SELECT
-              id,
-              document_type,
-              title,
-              file_name,
-              storage_path,
-              uploaded_at
-           FROM employee_documents
-           WHERE employee_id = $1
+      // Existing employment documents.
+      query(
+        `SELECT
+            id,
+            document_type,
+            title,
+            file_name,
+            storage_path,
+            uploaded_at
+         FROM employee_documents
+         WHERE employee_id = $1
            AND document_type NOT IN (
              'identity_proof',
              'educational_proof',
              'residential_proof'
            )
-           ORDER BY uploaded_at DESC`,
-          [employeeId]
-        ),
+         ORDER BY uploaded_at DESC`,
+        [employeeId]
+      ),
 
-        // Employee verification documents.
-        query(
-          `SELECT
-              id,
-              document_type,
-              title,
-              file_name,
-              storage_path,
-              uploaded_at
-           FROM employee_documents
-           WHERE employee_id = $1
+      // Employee verification documents.
+      query(
+        `SELECT
+            id,
+            document_type,
+            title,
+            file_name,
+            storage_path,
+            uploaded_at
+         FROM employee_documents
+         WHERE employee_id = $1
            AND document_type IN (
              'identity_proof',
              'educational_proof',
              'residential_proof'
            )
-           ORDER BY uploaded_at DESC`,
-          [employeeId]
-        )
-      ]);
+         ORDER BY uploaded_at DESC`,
+        [employeeId]
+      )
+    ]);
 
     return res.status(200).json({
       success: true,
@@ -150,13 +148,12 @@ router.get('/dashboard', async (req, res) => {
       documents: documents.rows,
       verificationDocuments: verificationDocuments.rows
     });
-
   } catch (error) {
     console.error('Employee dashboard error:', error);
 
     return res.status(500).json({
       success: false,
-      message: 'Unable to load employee dashboard'
+      message: 'Unable to load employee dashboard.'
     });
   }
 });
@@ -181,14 +178,14 @@ router.get('/profile', async (req, res) => {
           profile_photo
        FROM users
        WHERE id = $1
-       AND deleted_at IS NULL`,
+         AND deleted_at IS NULL`,
       [req.user.id]
     );
 
     if (!result.rows.length) {
       return res.status(404).json({
         success: false,
-        message: 'Employee profile not found'
+        message: 'Employee profile not found.'
       });
     }
 
@@ -196,13 +193,12 @@ router.get('/profile', async (req, res) => {
       success: true,
       profile: result.rows[0]
     });
-
   } catch (error) {
     console.error('Employee profile error:', error);
 
     return res.status(500).json({
       success: false,
-      message: 'Unable to load employee profile'
+      message: 'Unable to load employee profile.'
     });
   }
 });
@@ -211,61 +207,55 @@ router.get('/profile', async (req, res) => {
    UPLOAD PROFILE PHOTO
 ========================================= */
 
-router.post(
-  '/profile/photo',
-  imageUpload.single('photo'),
-  async (req, res) => {
-    try {
-      if (!req.file) {
-        return res.status(400).json({
-          success: false,
-          message: 'Upload a JPG, PNG or WEBP image (maximum 5 MB)'
-        });
-      }
-
-      const photo = `/api/files/${path.basename(req.file.path)}`;
-
-      const result = await query(
-        `UPDATE users
-         SET profile_photo = $1,
-             updated_at = NOW()
-         WHERE id = $2
-         AND deleted_at IS NULL
-         RETURNING profile_photo`,
-        [photo, req.user.id]
-      );
-
-      if (!result.rows.length) {
-        return res.status(404).json({
-          success: false,
-          message: 'Employee account not found'
-        });
-      }
-
-      return res.status(200).json({
-        success: true,
-        message: 'Profile photo updated successfully',
-        profile_photo: result.rows[0].profile_photo
-      });
-
-    } catch (error) {
-      console.error('Profile photo upload error:', error);
-
-      return res.status(500).json({
+router.post('/profile/photo', imageUpload.single('photo'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
         success: false,
-        message: 'Unable to upload profile photo'
+        message: 'Upload a JPG, PNG or WEBP image (maximum 5 MB).'
       });
     }
+
+    const photo = `/api/files/${path.basename(req.file.path)}`;
+
+    const result = await query(
+      `UPDATE users
+       SET profile_photo = $1,
+           updated_at = NOW()
+       WHERE id = $2
+         AND deleted_at IS NULL
+       RETURNING profile_photo`,
+      [photo, req.user.id]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'Employee account not found.'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Profile photo updated successfully.',
+      profile_photo: result.rows[0].profile_photo
+    });
+  } catch (error) {
+    console.error('Profile photo upload error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to upload profile photo.'
+    });
   }
-);
+});
 
 /* =========================================
    EMPLOYEE VERIFICATION DOCUMENTS
 ========================================= */
 
 // GET /api/employee/verification-documents
-// Employee can view only their own submissions.
-
+// Employees can view only their own verification documents.
 router.get('/verification-documents', async (req, res) => {
   try {
     const result = await query(
@@ -278,11 +268,11 @@ router.get('/verification-documents', async (req, res) => {
           uploaded_at
        FROM employee_documents
        WHERE employee_id = $1
-       AND document_type IN (
-         'identity_proof',
-         'educational_proof',
-         'residential_proof'
-       )
+         AND document_type IN (
+           'identity_proof',
+           'educational_proof',
+           'residential_proof'
+         )
        ORDER BY uploaded_at DESC`,
       [req.user.id]
     );
@@ -291,13 +281,12 @@ router.get('/verification-documents', async (req, res) => {
       success: true,
       documents: result.rows
     });
-
   } catch (error) {
     console.error('Verification document fetch error:', error);
 
     return res.status(500).json({
       success: false,
-      message: 'Unable to load verification documents'
+      message: 'Unable to load verification documents.'
     });
   }
 });
@@ -307,130 +296,353 @@ router.get('/verification-documents', async (req, res) => {
 ========================================= */
 
 // POST /api/employee/verification-documents
-//
-// Content-Type: multipart/form-data
-//
-// Fields:
+// multipart/form-data fields:
 // documentType = identity_proof | educational_proof | residential_proof
-// document     = PDF file
-//
-// Maximum file size: 300 KB.
+// document = PDF file (maximum 300 KB)
+router.post('/verification-documents', handlePdfUpload, async (req, res) => {
+  let savedFilePath = null;
 
-router.post(
-  '/verification-documents',
-  handlePdfUpload,
-  async (req, res) => {
+  try {
+    const employeeId = req.user.id;
+    const { documentType } = req.body;
 
-    let savedFilePath = null;
+    const allowedTypes = {
+      identity_proof: 'Identity Proof',
+      educational_proof: 'Educational Proof',
+      residential_proof: 'Residential Proof'
+    };
 
-    try {
-      const employeeId = req.user.id;
-      const { documentType } = req.body;
+    if (!allowedTypes[documentType]) {
+      return res.status(400).json({
+        success: false,
+        message: 'Select a valid document category.'
+      });
+    }
 
-      const allowedTypes = {
-        identity_proof: 'Identity Proof',
-        educational_proof: 'Educational Proof',
-        residential_proof: 'Residential Proof'
-      };
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please select a PDF document.'
+      });
+    }
 
-      // Validate document category.
-      if (!allowedTypes[documentType]) {
-        return res.status(400).json({
-          success: false,
-          message: 'Select a valid document category.'
-        });
-      }
+    if (req.file.size > MAX_PDF_SIZE) {
+      return res.status(400).json({
+        success: false,
+        message: 'PDF file must be 300 KB or smaller.'
+      });
+    }
 
-      // Validate file presence.
-      if (!req.file) {
-        return res.status(400).json({
-          success: false,
-          message: 'Please select a PDF document.'
-        });
-      }
+    // Validate the actual PDF signature, not only its extension/MIME type.
+    const pdfSignature = req.file.buffer.subarray(0, 5).toString('ascii');
 
-      // Validate actual file size.
-      if (req.file.size > MAX_PDF_SIZE) {
-        return res.status(400).json({
-          success: false,
-          message: 'PDF file must be 300 KB or smaller.'
-        });
-      }
+    if (pdfSignature !== '%PDF-') {
+      return res.status(400).json({
+        success: false,
+        message: 'The selected file is not a valid PDF.'
+      });
+    }
 
-      // Validate the actual PDF signature.
-      const pdfSignature = req.file.buffer
-        .subarray(0, 5)
-        .toString('ascii');
+    const filename = `employee-${randomUUID()}.pdf`;
+    savedFilePath = path.join(UPLOAD_DIR, filename);
 
-      if (pdfSignature !== '%PDF-') {
-        return res.status(400).json({
-          success: false,
-          message: 'The selected file is not a valid PDF.'
-        });
-      }
+    await fs.promises.writeFile(savedFilePath, req.file.buffer, {
+      flag: 'wx'
+    });
 
-      // Create a unique server-side filename.
-      const filename = `employee-${randomUUID()}.pdf`;
+    const title = allowedTypes[documentType];
 
-      savedFilePath = path.join(UPLOAD_DIR, filename);
-
-      // Save file only after validation.
-      await fs.promises.writeFile(
-        savedFilePath,
-        req.file.buffer,
-        { flag: 'wx' }
-      );
-
-      const title = allowedTypes[documentType];
-
-      // Save document information in PostgreSQL.
-      const result = await query(
-        `INSERT INTO employee_documents (
-            employee_id,
-            document_type,
-            title,
-            file_name,
-            storage_path,
-            uploaded_at
-         )
-         VALUES ($1, $2, $3, $4, $5, NOW())
-         RETURNING
-            id,
-            document_type,
-            title,
-            file_name,
-            storage_path,
-            uploaded_at`,
-        [
-          employeeId,
-          documentType,
+    const result = await query(
+      `INSERT INTO employee_documents (
+          employee_id,
+          document_type,
           title,
-          path.basename(req.file.originalname),
-          filename
+          file_name,
+          storage_path,
+          uploaded_at
+       )
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       RETURNING
+          id,
+          document_type,
+          title,
+          file_name,
+          storage_path,
+          uploaded_at`,
+      [
+        employeeId,
+        documentType,
+        title,
+        path.basename(req.file.originalname),
+        filename
+      ]
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: `${title} uploaded successfully.`,
+      document: result.rows[0]
+    });
+  } catch (error) {
+    if (savedFilePath) {
+      try {
+        await fs.promises.unlink(savedFilePath);
+      } catch (cleanupError) {
+        console.error('Uploaded file cleanup error:', cleanupError);
+      }
+    }
+
+    console.error('Verification document upload error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to upload verification document.'
+    });
+  }
+});
+
+/* =========================================
+   EMPLOYEE LOGIN ACTIVITY
+========================================= */
+
+// POST /api/employee/login-activity
+// Create one activity record after a successful employee login.
+// The employee ID is always taken from the authenticated token.
+router.post('/login-activity', requireEmployee, async (req, res) => {
+  try {
+    const allowedInitialStatuses = [
+      'not_asked',
+      'denied',
+      'unavailable'
+    ];
+
+    const requestedStatus = req.body?.locationStatus || 'not_asked';
+
+    const locationStatus = allowedInitialStatuses.includes(requestedStatus)
+      ? requestedStatus
+      : 'not_asked';
+
+    const result = await query(
+      `INSERT INTO employee_login_activity (
+          employee_id,
+          location_status,
+          user_agent
+       )
+       SELECT id, $2, $3
+       FROM users
+       WHERE id = $1
+         AND role = 'employee'
+         AND is_active = TRUE
+         AND deleted_at IS NULL
+       RETURNING id, employee_id, logged_in_at, location_status`,
+      [
+        req.user.id,
+        locationStatus,
+        req.get('user-agent') || null
+      ]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'Active employee account not found.'
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      activity: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Login activity creation error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to record login activity.'
+    });
+  }
+});
+
+// PATCH /api/employee/login-activity/:id/location-status
+// Employees can update only their own current activity status.
+router.patch(
+  '/login-activity/:id/location-status',
+  requireEmployee,
+  async (req, res) => {
+    try {
+      const allowedStatuses = [
+        'denied',
+        'unavailable',
+        'stopped'
+      ];
+
+      const { status } = req.body || {};
+
+      if (!allowedStatuses.includes(status)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid location status.'
+        });
+      }
+
+      const result = await query(
+        `UPDATE employee_login_activity
+         SET location_status = $1
+         WHERE id = $2
+           AND employee_id = $3
+           AND ended_at IS NULL
+         RETURNING id, location_status`,
+        [
+          status,
+          req.params.id,
+          req.user.id
         ]
       );
 
-      return res.status(201).json({
-        success: true,
-        message: `${title} uploaded successfully.`,
-        document: result.rows[0]
-      });
-
-    } catch (error) {
-      // Remove the physical file if database insertion fails.
-      if (savedFilePath) {
-        try {
-          await fs.promises.unlink(savedFilePath);
-        } catch (cleanupError) {
-          console.error('Uploaded file cleanup error:', cleanupError);
-        }
+      if (!result.rows.length) {
+        return res.status(404).json({
+          success: false,
+          message: 'Active login activity not found.'
+        });
       }
 
-      console.error('Verification document upload error:', error);
+      return res.status(200).json({
+        success: true,
+        activity: result.rows[0]
+      });
+    } catch (error) {
+      console.error('Location status update error:', error);
 
       return res.status(500).json({
         success: false,
-        message: 'Unable to upload verification document.'
+        message: 'Unable to update location status.'
+      });
+    }
+  }
+);
+
+// POST /api/employee/login-activity/:id/location
+// Save GPS coordinates only after the employee opts in
+// and browser permission is granted.
+router.post(
+  '/login-activity/:id/location',
+  requireEmployee,
+  async (req, res) => {
+    try {
+      const {
+        latitude,
+        longitude,
+        accuracy
+      } = req.body || {};
+
+      if (
+        typeof latitude !== 'number' ||
+        typeof longitude !== 'number' ||
+        !Number.isFinite(latitude) ||
+        !Number.isFinite(longitude) ||
+        latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: 'Valid GPS coordinates are required.'
+        });
+      }
+
+      const safeAccuracy =
+        typeof accuracy === 'number' &&
+        Number.isFinite(accuracy) &&
+        accuracy >= 0
+          ? accuracy
+          : null;
+
+      const result = await query(
+        `UPDATE employee_login_activity
+         SET latitude = $1,
+             longitude = $2,
+             accuracy = $3,
+             location_status = 'shared',
+             location_updated_at = NOW()
+         WHERE id = $4
+           AND employee_id = $5
+           AND ended_at IS NULL
+           AND location_status <> 'stopped'
+         RETURNING
+           id,
+           latitude,
+           longitude,
+           accuracy,
+           location_status,
+           location_updated_at`,
+        [
+          latitude,
+          longitude,
+          safeAccuracy,
+          req.params.id,
+          req.user.id
+        ]
+      );
+
+      if (!result.rows.length) {
+        return res.status(404).json({
+          success: false,
+          message: 'Active login activity not found or location sharing has been stopped.'
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        location: result.rows[0]
+      });
+    } catch (error) {
+      console.error('Employee location update error:', error);
+
+      return res.status(500).json({
+        success: false,
+        message: 'Unable to update employee location.'
+      });
+    }
+  }
+);
+
+// POST /api/employee/login-activity/:id/end
+// Mark the employee's login session as ended during sign-out.
+router.post(
+  '/login-activity/:id/end',
+  requireEmployee,
+  async (req, res) => {
+    try {
+      const result = await query(
+        `UPDATE employee_login_activity
+         SET ended_at = COALESCE(ended_at, NOW())
+         WHERE id = $1
+           AND employee_id = $2
+         RETURNING id, ended_at`,
+        [
+          req.params.id,
+          req.user.id
+        ]
+      );
+
+      if (!result.rows.length) {
+        return res.status(404).json({
+          success: false,
+          message: 'Login activity not found.'
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        activity: result.rows[0]
+      });
+    } catch (error) {
+      console.error('Login activity end error:', error);
+
+      return res.status(500).json({
+        success: false,
+        message: 'Unable to end login activity.'
       });
     }
   }
