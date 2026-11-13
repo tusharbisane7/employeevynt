@@ -10,6 +10,7 @@ import authRoutes from './routes/auth.routes.js';
 import employeeRoutes from './routes/employee.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import fileRoutes from './routes/files.routes.js';
+import paymentRoutes from './routes/payments.routes.js';
 
 // ==========================================
 // APPLICATION CONFIGURATION
@@ -211,7 +212,7 @@ app.use('/api/admin', adminRoutes);
 // ==========================================
 
 app.use('/api/files', fileRoutes);
-
+app.use('/api/payments', paymentRoutes);
 // ==========================================
 // API NOT FOUND
 // ==========================================
