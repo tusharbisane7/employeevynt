@@ -1,7 +1,6 @@
 
 import { Router } from 'express';
 import path from 'path';
-import fs from 'fs';
 import { randomUUID } from 'crypto';
 import multer from 'multer';
 
@@ -9,12 +8,15 @@ import { query } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { imageUpload } from '../middleware/upload.js';
 
+import {
+  uploadPdf,
+  uploadImage,
+  deleteCloudinaryFile
+} from '../utils/cloudinaryUpload.js';
+
 const router = Router();
 
-const UPLOAD_DIR = path.resolve(process.cwd(), 'uploads');
 const MAX_PDF_SIZE = 300 * 1024;
-
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 // All employee routes require authentication.
 router.use(authenticate);
@@ -31,16 +33,20 @@ function requireEmployee(req, res, next) {
   next();
 }
 
-/* =========================================
-   PDF UPLOAD CONFIGURATION
-========================================= */
+/*
+|--------------------------------------------------------------------------
+| PDF UPLOAD CONFIGURATION
+|--------------------------------------------------------------------------
+*/
 
 const pdfUpload = multer({
   storage: multer.memoryStorage(),
+
   limits: {
     fileSize: MAX_PDF_SIZE,
     files: 1
   },
+
   fileFilter: (req, file, callback) => {
     const extension = path.extname(file.originalname).toLowerCase();
 
@@ -48,7 +54,9 @@ const pdfUpload = multer({
       extension !== '.pdf' ||
       file.mimetype !== 'application/pdf'
     ) {
-      return callback(new Error('Only PDF files are allowed.'));
+      return callback(
+        new Error('Only PDF files are allowed.')
+      );
     }
 
     callback(null, true);
@@ -57,7 +65,9 @@ const pdfUpload = multer({
 
 function handlePdfUpload(req, res, next) {
   pdfUpload.single('document')(req, res, (error) => {
-    if (!error) return next();
+    if (!error) {
+      return next();
+    }
 
     if (error.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({
@@ -73,9 +83,27 @@ function handlePdfUpload(req, res, next) {
   });
 }
 
-/* =========================================
-   EMPLOYEE DASHBOARD
-========================================= */
+/*
+|--------------------------------------------------------------------------
+| CLOUDINARY CLEANUP HELPER
+|--------------------------------------------------------------------------
+*/
+
+async function cleanupCloudinaryFile(publicId, resourceType) {
+  if (!publicId) return;
+
+  try {
+    await deleteCloudinaryFile(publicId, resourceType);
+  } catch (error) {
+    console.error('Cloudinary cleanup error:', error.message);
+  }
+}
+
+/*
+|--------------------------------------------------------------------------
+| EMPLOYEE DASHBOARD
+|--------------------------------------------------------------------------
+*/
 
 router.get('/dashboard', async (req, res) => {
   try {
@@ -115,7 +143,7 @@ router.get('/dashboard', async (req, res) => {
             document_type,
             title,
             file_name,
-            storage_path,
+            '/api/files/document/' || id::text AS storage_path,
             uploaded_at
          FROM employee_documents
          WHERE employee_id = $1
@@ -134,7 +162,7 @@ router.get('/dashboard', async (req, res) => {
             document_type,
             title,
             file_name,
-            storage_path,
+            '/api/files/document/' || id::text AS storage_path,
             uploaded_at
          FROM employee_documents
          WHERE employee_id = $1
@@ -154,6 +182,7 @@ router.get('/dashboard', async (req, res) => {
       documents: documents.rows,
       verificationDocuments: verificationDocuments.rows
     });
+
   } catch (error) {
     console.error('Employee dashboard error:', error);
 
@@ -164,9 +193,11 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
-/* =========================================
-   EMPLOYEE PROFILE
-========================================= */
+/*
+|--------------------------------------------------------------------------
+| EMPLOYEE PROFILE
+|--------------------------------------------------------------------------
+*/
 
 router.get('/profile', async (req, res) => {
   try {
@@ -195,10 +226,18 @@ router.get('/profile', async (req, res) => {
       });
     }
 
+    const profile = result.rows[0];
+
+    // Return an authenticated API path rather than a Cloudinary ID.
+    profile.profile_photo = profile.profile_photo
+      ? `/api/files/profile/${profile.id}`
+      : null;
+
     return res.status(200).json({
       success: true,
-      profile: result.rows[0]
+      profile
     });
+
   } catch (error) {
     console.error('Employee profile error:', error);
 
@@ -209,14 +248,21 @@ router.get('/profile', async (req, res) => {
   }
 });
 
-/* =========================================
-   UPLOAD PROFILE PHOTO
-========================================= */
+/*
+|--------------------------------------------------------------------------
+| UPLOAD PROFILE PHOTO
+|--------------------------------------------------------------------------
+|
+| Multer memory storage -> Cloudinary -> PostgreSQL
+|
+*/
 
 router.post(
   '/profile/photo',
   imageUpload.single('photo'),
   async (req, res) => {
+    let uploadedPublicId = null;
+
     try {
       if (!req.file) {
         return res.status(400).json({
@@ -225,31 +271,73 @@ router.post(
         });
       }
 
-      const photo = `/api/files/${path.basename(req.file.path)}`;
+      // Upload the new image to Cloudinary.
+      const uploaded = await uploadImage(req.file);
 
-      const result = await query(
-        `UPDATE users
-         SET profile_photo = $1,
-             updated_at = NOW()
-         WHERE id = $2
-           AND deleted_at IS NULL
-         RETURNING profile_photo`,
-        [photo, req.user.id]
+      uploadedPublicId = uploaded.public_id;
+
+      // Find the current photo so it can be cleaned up later.
+      const previousResult = await query(
+        `SELECT profile_photo
+         FROM users
+         WHERE id = $1
+           AND deleted_at IS NULL`,
+        [req.user.id]
       );
 
-      if (!result.rows.length) {
+      if (!previousResult.rows.length) {
+        await cleanupCloudinaryFile(uploadedPublicId, 'image');
+
         return res.status(404).json({
           success: false,
           message: 'Employee account not found.'
         });
       }
 
+      const oldPublicId = previousResult.rows[0].profile_photo;
+
+      // Save the Cloudinary public ID in PostgreSQL.
+      const result = await query(
+        `UPDATE users
+         SET profile_photo = $1,
+             updated_at = NOW()
+         WHERE id = $2
+           AND deleted_at IS NULL
+         RETURNING id, profile_photo`,
+        [uploadedPublicId, req.user.id]
+      );
+
+      if (!result.rows.length) {
+        await cleanupCloudinaryFile(uploadedPublicId, 'image');
+
+        return res.status(404).json({
+          success: false,
+          message: 'Employee account not found.'
+        });
+      }
+
+      // Delete the old Cloudinary image after the DB update.
+      // Do not attempt to delete old local paths or URLs.
+      if (
+        oldPublicId &&
+        oldPublicId !== uploadedPublicId &&
+        !String(oldPublicId).startsWith('/api/files/') &&
+        !String(oldPublicId).startsWith('http')
+      ) {
+        await cleanupCloudinaryFile(oldPublicId, 'image');
+      }
+
       return res.status(200).json({
         success: true,
         message: 'Profile photo updated successfully.',
-        profile_photo: result.rows[0].profile_photo
+        profile_photo: `/api/files/profile/${req.user.id}`
       });
+
     } catch (error) {
+      if (uploadedPublicId) {
+        await cleanupCloudinaryFile(uploadedPublicId, 'image');
+      }
+
       console.error('Profile photo upload error:', error);
 
       return res.status(500).json({
@@ -260,11 +348,14 @@ router.post(
   }
 );
 
-/* =========================================
-   VERIFICATION DOCUMENTS
-========================================= */
+/*
+|--------------------------------------------------------------------------
+| VERIFICATION DOCUMENTS
+|--------------------------------------------------------------------------
+*/
 
 // GET employee verification documents.
+
 router.get('/verification-documents', async (req, res) => {
   try {
     const result = await query(
@@ -273,7 +364,7 @@ router.get('/verification-documents', async (req, res) => {
           document_type,
           title,
           file_name,
-          storage_path,
+          '/api/files/document/' || id::text AS storage_path,
           uploaded_at
        FROM employee_documents
        WHERE employee_id = $1
@@ -290,6 +381,7 @@ router.get('/verification-documents', async (req, res) => {
       success: true,
       documents: result.rows
     });
+
   } catch (error) {
     console.error('Verification document fetch error:', error);
 
@@ -300,15 +392,20 @@ router.get('/verification-documents', async (req, res) => {
   }
 });
 
-/* =========================================
-   UPLOAD VERIFICATION DOCUMENT
-========================================= */
+/*
+|--------------------------------------------------------------------------
+| UPLOAD VERIFICATION DOCUMENT
+|--------------------------------------------------------------------------
+|
+| PDF -> Multer memory storage -> Cloudinary -> PostgreSQL
+|
+*/
 
 router.post(
   '/verification-documents',
   handlePdfUpload,
   async (req, res) => {
-    let savedFilePath = null;
+    let uploadedPublicId = null;
 
     try {
       const employeeId = req.user.id;
@@ -341,6 +438,7 @@ router.post(
         });
       }
 
+      // Verify PDF file signature.
       const pdfSignature = req.file.buffer
         .subarray(0, 5)
         .toString('ascii');
@@ -352,18 +450,14 @@ router.post(
         });
       }
 
-      const filename = `employee-${randomUUID()}.pdf`;
-
-      savedFilePath = path.join(UPLOAD_DIR, filename);
-
-      await fs.promises.writeFile(
-        savedFilePath,
-        req.file.buffer,
-        { flag: 'wx' }
-      );
-
       const title = allowedTypes[documentType];
 
+      // Upload PDF directly to Cloudinary.
+      const uploaded = await uploadPdf(req.file);
+
+      uploadedPublicId = uploaded.public_id;
+
+      // Save Cloudinary public ID in PostgreSQL.
       const result = await query(
         `INSERT INTO employee_documents (
             employee_id,
@@ -379,29 +473,31 @@ router.post(
             document_type,
             title,
             file_name,
-            storage_path,
             uploaded_at`,
         [
           employeeId,
           documentType,
           title,
           path.basename(req.file.originalname),
-          filename
+          uploadedPublicId
         ]
       );
+
+      const document = result.rows[0];
 
       return res.status(201).json({
         success: true,
         message: `${title} uploaded successfully.`,
-        document: result.rows[0]
-      });
-    } catch (error) {
-      if (savedFilePath) {
-        try {
-          await fs.promises.unlink(savedFilePath);
-        } catch (cleanupError) {
-          console.error('Uploaded file cleanup error:', cleanupError);
+        document: {
+          ...document,
+          storage_path: `/api/files/document/${document.id}`
         }
+      });
+
+    } catch (error) {
+      // If DB insertion fails, remove the newly uploaded Cloudinary file.
+      if (uploadedPublicId) {
+        await cleanupCloudinaryFile(uploadedPublicId, 'raw');
       }
 
       console.error('Verification document upload error:', error);
@@ -414,9 +510,11 @@ router.post(
   }
 );
 
-/* =========================================
-   EMPLOYEE LOGIN ACTIVITY
-========================================= */
+/*
+|--------------------------------------------------------------------------
+| EMPLOYEE LOGIN ACTIVITY
+|--------------------------------------------------------------------------
+*/
 
 // CREATE LOGIN ACTIVITY.
 // POST /api/employee/login-activity
@@ -473,6 +571,7 @@ router.post('/login-activity', requireEmployee, async (req, res) => {
       success: true,
       activity: result.rows[0]
     });
+
   } catch (error) {
     console.error('Login activity creation error:', error);
 
@@ -510,6 +609,7 @@ router.get('/login-activity/me', requireEmployee, async (req, res) => {
       success: true,
       activities: result.rows
     });
+
   } catch (error) {
     console.error('Employee login history error:', error);
 
@@ -570,6 +670,7 @@ router.patch(
         success: true,
         activity: result.rows[0]
       });
+
     } catch (error) {
       console.error('Location status update error:', error);
 
@@ -657,6 +758,7 @@ router.post(
         success: true,
         location: result.rows[0]
       });
+
     } catch (error) {
       console.error('Employee location update error:', error);
 
@@ -699,6 +801,7 @@ router.post(
         success: true,
         activity: result.rows[0]
       });
+
     } catch (error) {
       console.error('Login activity end error:', error);
 
