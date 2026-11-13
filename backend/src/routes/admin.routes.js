@@ -1,14 +1,19 @@
+// backend/src/routes/admin.routes.js
 
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
-import path from 'path';
 
 import { query } from '../config/db.js';
 import { authenticate, requireAdmin } from '../middleware/auth.js';
 import { pdfUpload } from '../middleware/upload.js';
+import {
+  uploadPdf,
+  deleteCloudinaryFile
+} from '../utils/cloudinaryUpload.js';
 
 const router = Router();
 
+// All routes in this file are admin-only.
 router.use(authenticate, requireAdmin);
 
 /* =========================================
@@ -51,7 +56,8 @@ router.get('/overview', async (_req, res) => {
         `SELECT
             d.*,
             u.name AS employee_name,
-            u.employee_code
+            u.employee_code,
+            '/api/files/document/' || d.id::text AS document_url
          FROM employee_documents d
          INNER JOIN users u ON u.id = d.employee_id
          WHERE u.deleted_at IS NULL
@@ -396,11 +402,6 @@ router.post('/projects', async (req, res) => {
     });
   }
 
-  const client = await query('BEGIN').catch(() => null);
-
-  // Use a dedicated transaction client in production if your db
-  // module exposes pool.connect(). This endpoint retains the
-  // existing query-based project creation workflow below.
   try {
     const result = await query(
       `INSERT INTO projects (
@@ -562,15 +563,30 @@ router.delete('/projects/:id', async (req, res) => {
    EMPLOYEE DOCUMENT MANAGEMENT
 ========================================= */
 
-// UPLOAD DOCUMENT FOR EMPLOYEE
+// UPLOAD DOCUMENT FOR EMPLOYEE — Cloudinary authenticated RAW asset
 router.post(
   '/employees/:id/documents',
   pdfUpload.single('document'),
   async (req, res) => {
+    let uploadedPublicId = null;
+
     try {
       if (!req.file) {
         return res.status(400).json({
+          success: false,
           message: 'Please upload a PDF up to 10 MB.'
+        });
+      }
+
+      // Validate actual PDF signature.
+      if (
+        req.file.mimetype !== 'application/pdf' ||
+        !req.file.buffer ||
+        req.file.buffer.subarray(0, 5).toString() !== '%PDF-'
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: 'The uploaded file is not a valid PDF.'
         });
       }
 
@@ -589,12 +605,33 @@ router.post(
 
       if (!allowed.includes(documentType)) {
         return res.status(400).json({
+          success: false,
           message: 'Invalid document type.'
         });
       }
 
-      const filePath = `/api/files/${path.basename(req.file.path)}`;
+      // Check employee exists.
+      const employeeResult = await query(
+        `SELECT id
+         FROM users
+         WHERE id = $1
+           AND role = 'employee'
+           AND deleted_at IS NULL`,
+        [req.params.id]
+      );
 
+      if (!employeeResult.rows[0]) {
+        return res.status(404).json({
+          success: false,
+          message: 'Employee not found.'
+        });
+      }
+
+      // Upload PDF to Cloudinary.
+      const cloudinaryResult = await uploadPdf(req.file);
+      uploadedPublicId = cloudinaryResult.public_id;
+
+      // Save Cloudinary public ID in PostgreSQL.
       const result = await query(
         `INSERT INTO employee_documents (
             employee_id,
@@ -603,35 +640,42 @@ router.post(
             file_name,
             storage_path
          )
-         SELECT id, $2, $3, $4, $5
-         FROM users
-         WHERE id = $1
-           AND role = 'employee'
-           AND deleted_at IS NULL
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING *`,
         [
           req.params.id,
           documentType,
-          title || req.file.originalname,
+          String(title || req.file.originalname).trim(),
           req.file.originalname,
-          filePath
+          cloudinaryResult.public_id
         ]
       );
 
-      if (!result.rows[0]) {
-        return res.status(404).json({
-          message: 'Employee not found.'
-        });
-      }
-
       return res.status(201).json({
         success: true,
-        document: result.rows[0]
+        message: 'Document uploaded successfully.',
+        document: {
+          ...result.rows[0],
+          document_url: `/api/files/document/${result.rows[0].id}`
+        }
       });
     } catch (error) {
+      // Clean up uploaded Cloudinary file if DB insertion fails.
+      if (uploadedPublicId) {
+        try {
+          await deleteCloudinaryFile(uploadedPublicId, 'raw');
+        } catch (cleanupError) {
+          console.error(
+            'Cloudinary upload cleanup error:',
+            cleanupError.message
+          );
+        }
+      }
+
       console.error('Admin document upload error:', error);
 
       return res.status(500).json({
+        success: false,
         message: 'Could not upload employee document.'
       });
     }
@@ -639,11 +683,81 @@ router.post(
 );
 
 /* =========================================
+   DELETE EMPLOYEE DOCUMENT — ADMIN ONLY
+========================================= */
+
+router.delete('/documents/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const existing = await query(
+      `SELECT id, storage_path
+       FROM employee_documents
+       WHERE id = $1`,
+      [id]
+    );
+
+    const document = existing.rows[0];
+
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: 'Document not found.'
+      });
+    }
+
+    const storagePath = String(document.storage_path || '').trim();
+
+    const isLegacyLocalPath =
+      !storagePath ||
+      storagePath.startsWith('/api/') ||
+      storagePath.startsWith('uploads/') ||
+      storagePath.startsWith('http://') ||
+      storagePath.startsWith('https://');
+
+    // Delete Cloudinary asset first.
+    if (!isLegacyLocalPath) {
+      const cloudinaryResult = await deleteCloudinaryFile(
+        storagePath,
+        'raw'
+      );
+
+      if (
+        cloudinaryResult?.result &&
+        !['ok', 'not found'].includes(cloudinaryResult.result)
+      ) {
+        throw new Error(
+          `Cloudinary delete failed: ${cloudinaryResult.result}`
+        );
+      }
+    }
+
+    // Delete database record.
+    await query(
+      `DELETE FROM employee_documents
+       WHERE id = $1`,
+      [id]
+    );
+
+    return res.json({
+      success: true,
+      message: 'Employee document deleted successfully.'
+    });
+  } catch (error) {
+    console.error('Admin document delete error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to delete employee document.'
+    });
+  }
+});
+
+/* =========================================
    EMPLOYEE LOGIN ACTIVITY
 ========================================= */
 
-// GET /api/admin/login-activity
-// Returns the latest five login records for each active employee.
+// Latest five login records for each active employee.
 router.get('/login-activity', async (_req, res) => {
   try {
     const result = await query(

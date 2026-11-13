@@ -1,6 +1,6 @@
+// backend/src/routes/files.routes.js
 
 import { Router } from 'express';
-import path from 'path';
 import axios from 'axios';
 
 import cloudinary from '../config/cloudinary.js';
@@ -9,59 +9,9 @@ import { query } from '../config/db.js';
 
 const router = Router();
 
-/*
-|--------------------------------------------------------------------------
-| FILE CONFIGURATION
-|--------------------------------------------------------------------------
-*/
-
-const CONTENT_TYPES = {
-  '.pdf': 'application/pdf',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.png': 'image/png',
-  '.webp': 'image/webp',
-  '.doc': 'application/msword',
-  '.docx':
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  '.xls': 'application/vnd.ms-excel',
-  '.xlsx':
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-};
-
-/*
-|--------------------------------------------------------------------------
-| VALIDATE FILENAME
-|--------------------------------------------------------------------------
-*/
-
-function isValidFilename(filename) {
-  return (
-    typeof filename === 'string' &&
-    filename.length > 0 &&
-    filename.length <= 255 &&
-    filename === path.basename(filename) &&
-    !filename.includes('..') &&
-    !filename.includes('/') &&
-    !filename.includes('\\')
-  );
-}
-
-/*
-|--------------------------------------------------------------------------
-| GET CLOUDINARY URL
-|--------------------------------------------------------------------------
-|
-| storage_path must contain the Cloudinary public_id.
-|
-| resource_type:
-| - image: profile photos
-| - raw: PDFs, DOCX, XLSX and other documents
-|
-| Cloudinary assets must have been uploaded using:
-| type: 'authenticated'
-|
-*/
+/* =========================================
+   CLOUDINARY URL HELPER
+========================================= */
 
 function getAuthenticatedCloudinaryUrl(publicId, resourceType) {
   return cloudinary.url(publicId, {
@@ -72,195 +22,128 @@ function getAuthenticatedCloudinaryUrl(publicId, resourceType) {
   });
 }
 
-/*
-|--------------------------------------------------------------------------
-| GET /api/files/:filename
-|--------------------------------------------------------------------------
-|
-| Admin can access all employee files.
-| Employees can access only their own files.
-|
-*/
+/* =========================================
+   FILE STREAM HELPER
+========================================= */
 
-router.get('/:filename', authenticate, async (req, res) => {
-  try {
-    const { filename } = req.params;
+async function streamCloudinaryFile({
+  publicId,
+  resourceType,
+  contentType,
+  filename,
+  res
+}) {
+  const cloudinaryUrl = getAuthenticatedCloudinaryUrl(
+    publicId,
+    resourceType
+  );
 
-    if (!isValidFilename(filename)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid filename'
-      });
-    }
+  const response = await axios.get(cloudinaryUrl, {
+    responseType: 'stream',
+    timeout: 30000,
+    maxRedirects: 3,
+    validateStatus: status => status === 200
+  });
 
-    /*
-    |--------------------------------------------------------------------------
-    | FIND EMPLOYEE DOCUMENTS
-    |--------------------------------------------------------------------------
-    */
+  res.setHeader(
+    'Content-Type',
+    contentType || response.headers['content-type'] ||
+      'application/octet-stream'
+  );
 
-    const documentsResult = await query(
-      `SELECT
-          employee_id,
-          storage_path
-       FROM employee_documents
-       WHERE storage_path IS NOT NULL
-       AND storage_path LIKE $1`,
-      [`%${filename}%`]
-    );
-
-    /*
-    |--------------------------------------------------------------------------
-    | FIND PROFILE PHOTOS
-    |--------------------------------------------------------------------------
-    */
-
-    const photosResult = await query(
-      `SELECT
-          id AS employee_id,
-          profile_photo AS storage_path
-       FROM users
-       WHERE profile_photo IS NOT NULL
-       AND profile_photo LIKE $1`,
-      [`%${filename}%`]
-    );
-
-    const documentRecords = documentsResult.rows.map(record => ({
-      ...record,
-      resource_type: 'raw'
-    }));
-
-    const photoRecords = photosResult.rows.map(record => ({
-      ...record,
-      resource_type: 'image'
-    }));
-
-    const matchingRecords = [
-      ...documentRecords,
-      ...photoRecords
-    ];
-
-    if (matchingRecords.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'File record not found'
-      });
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | CHECK USER PERMISSIONS
-    |--------------------------------------------------------------------------
-    */
-
-    const isAdmin = req.user.role === 'admin';
-
-    const authorizedRecords = matchingRecords.filter(record => {
-      return (
-        isAdmin ||
-        String(record.employee_id) === String(req.user.id)
-      );
-    });
-
-    if (authorizedRecords.length === 0) {
-      return res.status(403).json({
-        success: false,
-        message: 'You do not have permission to access this file'
-      });
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | GET CLOUDINARY PUBLIC ID
-    |--------------------------------------------------------------------------
-    */
-
-    const record = authorizedRecords[0];
-
-    let publicId = String(record.storage_path || '').trim();
-
-    // Remove a possible leading slash.
-    publicId = publicId.replace(/^\/+/, '');
-
-    if (!publicId) {
-      return res.status(404).json({
-        success: false,
-        message: 'Cloudinary file reference is missing'
-      });
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | GENERATE AUTHENTICATED CLOUDINARY URL
-    |--------------------------------------------------------------------------
-    */
-
-    const cloudinaryUrl = getAuthenticatedCloudinaryUrl(
-      publicId,
-      record.resource_type
-    );
-
-    /*
-    |--------------------------------------------------------------------------
-    | FETCH FILE FROM CLOUDINARY
-    |--------------------------------------------------------------------------
-    */
-
-    const response = await axios.get(cloudinaryUrl, {
-      responseType: 'stream',
-      timeout: 30000,
-      maxRedirects: 3,
-      validateStatus: status => status === 200
-    });
-
-    /*
-    |--------------------------------------------------------------------------
-    | CONTENT TYPE
-    |--------------------------------------------------------------------------
-    */
-
-    const extension = path.extname(filename).toLowerCase();
-
-    const contentType =
-      CONTENT_TYPES[extension] ||
-      response.headers['content-type'] ||
-      'application/octet-stream';
-
-    res.setHeader('Content-Type', contentType);
+  if (filename) {
+    const safeFilename = filename.replace(/["\\\r\n]/g, '_');
 
     res.setHeader(
       'Content-Disposition',
-      `inline; filename="${filename.replace(/["\\]/g, '_')}"`
+      `inline; filename="${safeFilename}"`
+    );
+  }
+
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'private, no-store');
+
+  response.data.on('error', error => {
+    console.error('Cloudinary stream error:', error);
+
+    if (!res.headersSent) {
+      res.status(502).json({
+        success: false,
+        message: 'Unable to retrieve file from storage.'
+      });
+    } else {
+      res.destroy(error);
+    }
+  });
+
+  return response.data.pipe(res);
+}
+
+/* =========================================
+   GET EMPLOYEE DOCUMENT
+   GET /api/files/document/:id
+========================================= */
+
+router.get('/document/:id', authenticate, async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT
+          d.id,
+          d.employee_id,
+          d.file_name,
+          d.storage_path
+       FROM employee_documents d
+       INNER JOIN users u ON u.id = d.employee_id
+       WHERE d.id = $1
+         AND u.deleted_at IS NULL`,
+      [req.params.id]
     );
 
-    res.setHeader('X-Content-Type-Options', 'nosniff');
+    const document = result.rows[0];
 
-    res.setHeader('Cache-Control', 'private, no-store');
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: 'Document not found.'
+      });
+    }
 
-    /*
-    |--------------------------------------------------------------------------
-    | STREAM FILE TO USER
-    |--------------------------------------------------------------------------
-    */
+    const isAdmin = req.user.role === 'admin';
+    const isOwner =
+      String(document.employee_id) === String(req.user.id);
 
-    response.data.on('error', error => {
-      console.error('Cloudinary stream error:', error);
+    if (!isAdmin && !isOwner) {
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have permission to access this document.'
+      });
+    }
 
-      if (!res.headersSent) {
-        res.status(502).json({
-          success: false,
-          message: 'Unable to retrieve file from storage'
-        });
-      } else {
-        res.destroy(error);
-      }
+    const publicId = String(document.storage_path || '').trim();
+
+    if (
+      !publicId ||
+      publicId.startsWith('/api/') ||
+      publicId.startsWith('uploads/') ||
+      publicId.startsWith('http://') ||
+      publicId.startsWith('https://')
+    ) {
+      return res.status(410).json({
+        success: false,
+        message: 'This document uses legacy storage. Please ask an admin to re-upload it.'
+      });
+    }
+
+    return await streamCloudinaryFile({
+      publicId,
+      resourceType: 'raw',
+      contentType: 'application/pdf',
+      filename: document.file_name || `document-${document.id}.pdf`,
+      res
     });
-
-    return response.data.pipe(res);
-
   } catch (error) {
     console.error(
-      'File access error:',
+      'Document access error:',
       error.response?.status || error.message
     );
 
@@ -271,7 +154,7 @@ router.get('/:filename', authenticate, async (req, res) => {
     if (error.response?.status === 404) {
       return res.status(404).json({
         success: false,
-        message: 'File not found in Cloudinary'
+        message: 'Document not found in Cloudinary.'
       });
     }
 
@@ -281,13 +164,103 @@ router.get('/:filename', authenticate, async (req, res) => {
     ) {
       return res.status(502).json({
         success: false,
-        message: 'Cloudinary rejected the file request. Check asset access settings.'
+        message: 'Cloudinary rejected the document request. Check asset access settings.'
       });
     }
 
     return res.status(500).json({
       success: false,
-      message: 'Unable to access file'
+      message: 'Unable to access document.'
+    });
+  }
+});
+
+/* =========================================
+   GET EMPLOYEE PROFILE PHOTO
+   GET /api/files/profile/:employeeId
+========================================= */
+
+router.get('/profile/:employeeId', authenticate, async (req, res) => {
+  try {
+    const isAdmin = req.user.role === 'admin';
+    const isOwner =
+      String(req.params.employeeId) === String(req.user.id);
+
+    if (!isAdmin && !isOwner) {
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have permission to access this profile photo.'
+      });
+    }
+
+    const result = await query(
+      `SELECT id, profile_photo
+       FROM users
+       WHERE id = $1
+         AND deleted_at IS NULL`,
+      [req.params.employeeId]
+    );
+
+    const employee = result.rows[0];
+
+    if (!employee || !employee.profile_photo) {
+      return res.status(404).json({
+        success: false,
+        message: 'Profile photo not found.'
+      });
+    }
+
+    const publicId = String(employee.profile_photo).trim();
+
+    if (
+      publicId.startsWith('/api/') ||
+      publicId.startsWith('uploads/') ||
+      publicId.startsWith('http://') ||
+      publicId.startsWith('https://')
+    ) {
+      return res.status(410).json({
+        success: false,
+        message: 'This profile photo uses legacy storage.'
+      });
+    }
+
+    return await streamCloudinaryFile({
+      publicId,
+      resourceType: 'image',
+      contentType: undefined,
+      filename: `profile-${employee.id}`,
+      res
+    });
+  } catch (error) {
+    console.error(
+      'Profile photo access error:',
+      error.response?.status || error.message
+    );
+
+    if (res.headersSent) {
+      return res.destroy();
+    }
+
+    if (error.response?.status === 404) {
+      return res.status(404).json({
+        success: false,
+        message: 'Profile photo not found in Cloudinary.'
+      });
+    }
+
+    if (
+      error.response?.status === 401 ||
+      error.response?.status === 403
+    ) {
+      return res.status(502).json({
+        success: false,
+        message: 'Cloudinary rejected the profile photo request.'
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to access profile photo.'
     });
   }
 });
